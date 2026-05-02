@@ -135,6 +135,7 @@ const FETCHERS: ReadonlyArray<ProviderFetcher> = [
     url: 'https://llm.chutes.ai/v1/models',
   }),
   modelsDevFetcher('zai-coding', 'zai-coding-plan'),
+  modelsDevFetcher('ollama-cloud', 'ollama-cloud'),
 ];
 
 function modelIdToDisplayName(id: string) {
