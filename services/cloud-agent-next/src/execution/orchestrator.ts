@@ -17,6 +17,7 @@ import type { CloudAgentSession } from '../persistence/CloudAgentSession.js';
 import type { ExecutionPlan, ExecutionResult } from './types.js';
 import { ExecutionError } from './errors.js';
 import { SessionService, type PreparedSession } from '../session-service.js';
+import type { SessionProfileBundle } from '../session-profile.js';
 import { logger } from '../logger.js';
 import { logSandboxOperationTimeout } from '../sandbox-timeout-logging.js';
 import { updateGitRemoteToken } from '../workspace.js';
@@ -41,6 +42,29 @@ function withWorkspacePreparationTimeout<T>(operation: Promise<T>, step: string)
         timeoutLayer: 'outer',
       })
   );
+}
+
+/**
+ * Build the profile bundle for the fast path: prefer `initContext.profile`,
+ * but fall back to `existingMetadata.profile` for `mcpServers`, `runtimeSkills`,
+ * and `runtimeAgents` — fields that were "previously dropped on the fast
+ * path" and must flow back in when we recreate the sandbox session.
+ *
+ * `envVars`, `encryptedSecrets`, and `setupCommands` come from `initContext`
+ * only (no existing-metadata fallback) to match the prior behaviour.
+ */
+function mergeFastPathProfile(
+  initProfile: SessionProfileBundle | undefined,
+  existingProfile: SessionProfileBundle | undefined
+): SessionProfileBundle {
+  return {
+    envVars: initProfile?.envVars,
+    encryptedSecrets: initProfile?.encryptedSecrets,
+    setupCommands: initProfile?.setupCommands,
+    mcpServers: initProfile?.mcpServers ?? existingProfile?.mcpServers,
+    runtimeSkills: initProfile?.runtimeSkills ?? existingProfile?.runtimeSkills,
+    runtimeAgents: initProfile?.runtimeAgents ?? existingProfile?.runtimeAgents,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,21 +314,21 @@ export class ExecutionOrchestrator {
           gitUrl: initContext.gitUrl,
           gitToken: initContext.gitToken,
           platform: initContext.platform,
-          envVars: initContext.envVars,
+          envVars: initContext.profile?.envVars,
         };
 
         const session = await withWorkspacePreparationTimeout(
-          this.sessionService.getOrCreateSession(
+          this.sessionService.getOrCreateSession({
             sandbox,
             context,
-            this.deps.env,
-            initContext.kilocodeToken,
-            initContext.kilocodeModel ?? 'default',
-            orgId,
-            initContext.encryptedSecrets,
-            initContext.createdOnPlatform,
-            existingMetadata.appendSystemPrompt
-          ),
+            env: this.deps.env,
+            originalToken: initContext.kilocodeToken,
+            kilocodeModel: initContext.kilocodeModel ?? 'default',
+            originalOrgId: orgId,
+            createdOnPlatform: initContext.createdOnPlatform,
+            appendSystemPrompt: existingMetadata.appendSystemPrompt,
+            profile: mergeFastPathProfile(initContext.profile, existingMetadata.profile),
+          }),
           'prepared session creation'
         );
 
@@ -343,10 +367,7 @@ export class ExecutionOrchestrator {
             kilocodeModel: initContext.kilocodeModel ?? 'default',
             kiloSessionId: initContext.kiloSessionId,
             env: this.deps.env,
-            envVars: initContext.envVars,
-            encryptedSecrets: initContext.encryptedSecrets,
-            setupCommands: initContext.setupCommands,
-            mcpServers: initContext.mcpServers,
+            profile: initContext.profile,
             botId: initContext.botId,
             githubAppType: initContext.githubAppType,
             createdOnPlatform: initContext.createdOnPlatform,
@@ -373,10 +394,7 @@ export class ExecutionOrchestrator {
           gitUrl: initContext.gitUrl,
           gitToken: initContext.gitToken,
           env: this.deps.env,
-          envVars: initContext.envVars,
-          encryptedSecrets: initContext.encryptedSecrets,
-          setupCommands: initContext.setupCommands,
-          mcpServers: initContext.mcpServers,
+          profile: initContext.profile,
           upstreamBranch: initContext.upstreamBranch,
           botId: initContext.botId,
           githubAppType: initContext.githubAppType,
