@@ -1987,6 +1987,7 @@ function isMorningBriefingWarmupError(
   const normalized = raw.replace(/^(?:[A-Za-z]+Error:\s*)+/, '');
   if (
     normalized.includes('Gateway not running') ||
+    normalized.includes('Instance is not running') ||
     normalized.includes('Failed to reach gateway')
   ) {
     return true;

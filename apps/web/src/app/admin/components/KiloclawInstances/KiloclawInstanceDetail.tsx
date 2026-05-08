@@ -1457,7 +1457,7 @@ export function KiloclawInstanceDetail({ instanceId }: { instanceId: string }) {
   });
 
   const gatewayControlsEnabled =
-    data?.destroyed_at === null && !!runtimeId && data?.workerStatus?.status !== 'restoring';
+    data?.destroyed_at === null && !!runtimeId && data?.workerStatus?.status === 'running';
 
   const {
     data: gatewayStatus,
@@ -4135,7 +4135,7 @@ export function KiloclawInstanceDetail({ instanceId }: { instanceId: string }) {
             <CardContent className="space-y-4">
               {!gatewayControlsEnabled && (
                 <p className="text-muted-foreground text-sm">
-                  Gateway process controls are available when the instance has a runtime ID.
+                  Gateway process controls are available when the instance runtime is running.
                 </p>
               )}
 
