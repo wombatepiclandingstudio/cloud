@@ -285,6 +285,7 @@ describe('handlePullRequest', () => {
         id: 'pending-review',
         prevStatus: 'pending',
         sessionId: null,
+        latestActiveAttemptId: 'pending-attempt',
         checkRunId: 101,
         headSha: 'old-pending-sha',
         platform: 'github',
@@ -295,6 +296,7 @@ describe('handlePullRequest', () => {
         id: 'queued-review',
         prevStatus: 'queued',
         sessionId: 'session-queued',
+        latestActiveAttemptId: 'queued-attempt',
         checkRunId: 102,
         headSha: 'old-queued-sha',
         platform: 'github',
@@ -305,6 +307,7 @@ describe('handlePullRequest', () => {
         id: 'running-review',
         prevStatus: 'running',
         sessionId: 'session-running',
+        latestActiveAttemptId: 'running-attempt',
         checkRunId: null,
         headSha: 'old-running-sha',
         platform: 'github',
@@ -318,8 +321,18 @@ describe('handlePullRequest', () => {
     expect(response.status).toBe(202);
     expect(mockCancelSupersededReviewsForPR).toHaveBeenCalledWith('acme/widgets', 42, 'abc123');
     expect(mockCancelReview).toHaveBeenCalledTimes(2);
-    expect(mockCancelReview).toHaveBeenNthCalledWith(1, 'queued-review', 'Superseded by new push');
-    expect(mockCancelReview).toHaveBeenNthCalledWith(2, 'running-review', 'Superseded by new push');
+    expect(mockCancelReview).toHaveBeenNthCalledWith(
+      1,
+      'queued-review',
+      'Superseded by new push',
+      'queued-attempt'
+    );
+    expect(mockCancelReview).toHaveBeenNthCalledWith(
+      2,
+      'running-review',
+      'Superseded by new push',
+      'running-attempt'
+    );
     expect(mockUpdateCheckRun).toHaveBeenCalledWith(
       '98765',
       'acme',

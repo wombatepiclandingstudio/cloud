@@ -1,6 +1,6 @@
 {
-  "id": "08146ce4-edc1-4d5f-bcc6-4c7474dacba4",
-  "prevId": "8eaa5c7d-b58b-480b-b64d-ed68a514b2cd",
+  "id": "f1e35802-da14-4ad3-b5ab-498605450be1",
+  "prevId": "08146ce4-edc1-4d5f-bcc6-4c7474dacba4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4135,6 +4135,242 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.cloud_agent_code_review_attempts": {
+      "name": "cloud_agent_code_review_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "pg_catalog.gen_random_uuid()"
+        },
+        "code_review_id": {
+          "name": "code_review_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_number": {
+          "name": "attempt_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_of_attempt_id": {
+          "name": "retry_of_attempt_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retry_reason": {
+          "name": "retry_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cli_session_id": {
+          "name": "cli_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_id": {
+          "name": "execution_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terminal_reason": {
+          "name": "terminal_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "UQ_cloud_agent_code_review_attempts_review_attempt_number": {
+          "name": "UQ_cloud_agent_code_review_attempts_review_attempt_number",
+          "columns": [
+            {
+              "expression": "code_review_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cloud_agent_code_review_attempts_code_review_id": {
+          "name": "idx_cloud_agent_code_review_attempts_code_review_id",
+          "columns": [
+            {
+              "expression": "code_review_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cloud_agent_code_review_attempts_session_id": {
+          "name": "idx_cloud_agent_code_review_attempts_session_id",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cloud_agent_code_review_attempts_cli_session_id": {
+          "name": "idx_cloud_agent_code_review_attempts_cli_session_id",
+          "columns": [
+            {
+              "expression": "cli_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cloud_agent_code_review_attempts_status": {
+          "name": "idx_cloud_agent_code_review_attempts_status",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cloud_agent_code_review_attempts_retry_reason": {
+          "name": "idx_cloud_agent_code_review_attempts_retry_reason",
+          "columns": [
+            {
+              "expression": "retry_reason",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cloud_agent_code_review_attempts_code_review_id_cloud_agent_code_reviews_id_fk": {
+          "name": "cloud_agent_code_review_attempts_code_review_id_cloud_agent_code_reviews_id_fk",
+          "tableFrom": "cloud_agent_code_review_attempts",
+          "tableTo": "cloud_agent_code_reviews",
+          "columnsFrom": [
+            "code_review_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "cloud_agent_code_review_attempts_retry_of_attempt_id_cloud_agent_code_review_attempts_id_fk": {
+          "name": "cloud_agent_code_review_attempts_retry_of_attempt_id_cloud_agent_code_review_attempts_id_fk",
+          "tableFrom": "cloud_agent_code_review_attempts",
+          "tableTo": "cloud_agent_code_review_attempts",
+          "columnsFrom": [
+            "retry_of_attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "cloud_agent_code_review_attempts_attempt_number_check": {
+          "name": "cloud_agent_code_review_attempts_attempt_number_check",
+          "value": "\"cloud_agent_code_review_attempts\".\"attempt_number\" >= 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.cloud_agent_code_reviews": {
