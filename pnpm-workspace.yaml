@@ -4,6 +4,8 @@ packages:
   - services/cloud-agent/wrapper
   - services/cloud-agent-next/wrapper
   - services/gastown/container
+  - services/kiloclaw/controller
+  - services/kiloclaw/plugins/*
   - services/deploy-infra/builder
   - services/deploy-infra/dispatcher
   - packages/*
@@ -40,6 +42,8 @@ catalog:
   zod: 4.4.3
 
 minimumReleaseAge: 6842
+minimumReleaseAgeExclude:
+  - tsx@4.21.0
 overrides:
   '@sentry/cli': 3.4.2
   mdast-util-to-hast: 13.2.1
@@ -100,3 +104,6 @@ allowBuilds:
   sharp: false
   unrs-resolver: false
   utf-8-validate: false
+  '@google/genai': false
+  koffi: false
+  openclaw: false
