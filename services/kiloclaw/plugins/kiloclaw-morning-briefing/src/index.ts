@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { Type } from '@sinclair/typebox';
 import type { OpenClawConfig, OpenClawPluginApi } from 'openclaw/plugin-sdk';
@@ -10,7 +11,12 @@ import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 // signature is actually broader than the SDK's typed `ListWebSearchProvidersParams`,
 // and passing the real api into a narrow-typed function fails.
 type SdkWebSearchRuntime = OpenClawPluginApi['runtime']['webSearch'];
-import { buildBriefingMarkdown, offsetDateKey, resolveBriefingPath } from './briefing-utils';
+import {
+  buildBriefingMarkdown,
+  type BriefingDocumentSection,
+  offsetDateKey,
+  resolveBriefingPath,
+} from './briefing-utils';
 import {
   type BriefingDeliveryResult,
   deliverBriefingToConfiguredChannels,
@@ -70,6 +76,14 @@ import {
   fetchCalendarEvents,
   resolveCalendarReady,
 } from './calendar-client';
+import { createKiloChatSummaryClient } from './chat-summary-client';
+import {
+  buildChatSummarySectionLines,
+  buildChatSummaryStatus,
+  buildTodaySoFarChatWindow,
+  buildYesterdayChatWindow,
+  summarizeChatActivity,
+} from './chat-summary-utils';
 
 const PLUGIN_ID = 'kiloclaw-morning-briefing';
 const CRON_JOB_NAME = 'KiloClaw Morning Briefing';
@@ -139,11 +153,12 @@ type StoredStatus = {
 };
 
 type SourceCollectionResult = {
-  source: 'calendar' | 'github' | 'linear' | 'local-news' | 'web';
+  source: 'calendar' | 'github' | 'kilo-chat' | 'linear' | 'local-news' | 'web';
   configured: boolean;
   ok: boolean;
   summary: string;
   sectionLines: string[];
+  sections?: BriefingDocumentSection[];
   /**
    * Optional per-source section title override. Most sources use a
    * fixed title (`GitHub`, `Linear`, `Web Search`), but `local-news`
@@ -169,10 +184,17 @@ function resolvePluginConfig(raw: unknown): BriefingPluginConfig {
   };
 }
 
-async function readRequestBody(req: import('node:http').IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+async function readRequestBody(
+  req: IncomingMessage & AsyncIterable<Buffer | string>
+): Promise<unknown> {
+  const chunks: Uint8Array[] = [];
+  for await (const rawChunk of req) {
+    const chunk: unknown = rawChunk;
+    if (typeof chunk === 'string') {
+      chunks.push(new TextEncoder().encode(chunk));
+    } else if (chunk instanceof Uint8Array) {
+      chunks.push(chunk);
+    }
   }
   const raw = Buffer.concat(chunks).toString('utf8').trim();
   if (!raw) {
@@ -185,11 +207,7 @@ async function readRequestBody(req: import('node:http').IncomingMessage): Promis
   }
 }
 
-function sendJson(
-  res: import('node:http').ServerResponse,
-  statusCode: number,
-  body: Record<string, unknown>
-): void {
+function sendJson(res: ServerResponse, statusCode: number, body: Record<string, unknown>): void {
   res.statusCode = statusCode;
   res.setHeader('content-type', 'application/json');
   res.end(JSON.stringify(body));
@@ -1328,6 +1346,65 @@ async function collectCalendar(now: Date, userTimezone: string): Promise<SourceC
   }
 }
 
+async function collectKiloChatSummary(
+  now: Date,
+  userTimezone: string
+): Promise<SourceCollectionResult> {
+  const client = createKiloChatSummaryClient();
+  if (!client.configured) {
+    return {
+      source: 'kilo-chat',
+      configured: false,
+      ok: true,
+      summary: client.reason,
+      sectionLines: [],
+    };
+  }
+
+  const yesterdayWindow = buildYesterdayChatWindow(now, userTimezone);
+  const todayWindow = buildTodaySoFarChatWindow(now, userTimezone);
+  try {
+    const [yesterday, today] = await Promise.all([
+      client.listConversationsForWindow(yesterdayWindow),
+      client.listConversationsForWindow(todayWindow),
+    ]);
+    const yesterdayStats = summarizeChatActivity(yesterday.conversations, yesterdayWindow);
+    const todayStats = summarizeChatActivity(today.conversations, todayWindow);
+    const truncatedNote =
+      yesterday.truncated || today.truncated
+        ? ' (counts truncated; activity exceeded the scan limit)'
+        : '';
+    return {
+      source: 'kilo-chat',
+      configured: true,
+      ok: true,
+      summary: `Yesterday: ${buildChatSummaryStatus(
+        yesterdayStats,
+        'yesterday'
+      )}; today: ${buildChatSummaryStatus(todayStats, 'so far today')}${truncatedNote}`,
+      sectionLines: [],
+      sections: [
+        {
+          title: `Yesterday in Chat (${yesterdayWindow.dateKey})`,
+          lines: buildChatSummarySectionLines(yesterdayStats, 'No Kilo Chat messages yesterday.'),
+        },
+        {
+          title: 'So Far Today in Chat',
+          lines: buildChatSummarySectionLines(todayStats, 'No Kilo Chat messages so far today.'),
+        },
+      ],
+    };
+  } catch (error) {
+    return {
+      source: 'kilo-chat',
+      configured: true,
+      ok: false,
+      summary: `Kilo Chat summary failed: ${error instanceof Error ? error.message : String(error)}`,
+      sectionLines: [],
+    };
+  }
+}
+
 async function generateBriefing(
   api: {
     runtime: {
@@ -1397,13 +1474,15 @@ async function generateBriefing(
       ? configuredTimezone
       : DEFAULT_TIMEZONE;
 
+  const generatedAt = new Date();
   const corePromises = [
-    collectCalendar(new Date(), briefingTimezone),
+    collectCalendar(generatedAt, briefingTimezone),
+    collectKiloChatSummary(generatedAt, briefingTimezone),
     collectGithub(api),
     collectLinear(api),
     collectWebSearch(api, webSearchTopics),
   ];
-  const [calendar, github, linear, web] = await Promise.all(corePromises);
+  const [calendar, kiloChat, github, linear, web] = await Promise.all(corePromises);
   // Local News slots between Linear and Web Search — interest-gated so
   // users who haven't opted in pay no search cost and see no
   // local-news entry in the source-status footer.
@@ -1413,6 +1492,7 @@ async function generateBriefing(
 
   const sources: SourceCollectionResult[] = [
     calendar,
+    kiloChat,
     github,
     linear,
     ...(localNews ? [localNews] : []),
@@ -1422,7 +1502,7 @@ async function generateBriefing(
 
   if (successes.length === 0) {
     throw new Error(
-      'No usable briefing sources are available. Configure at least one of Calendar, GitHub, Linear, Local News, or web search.'
+      'No usable briefing sources are available. Configure at least one of Calendar, Kilo Chat, GitHub, Linear, Local News, or web search.'
     );
   }
 
@@ -1435,23 +1515,31 @@ async function generateBriefing(
   const DEFAULT_SECTION_TITLE: Record<SourceCollectionResult['source'], string> = {
     calendar: 'Calendar',
     github: 'GitHub',
+    // `kilo-chat` always supplies its own `sections`, so this entry only
+    // exists to satisfy the exhaustive Record type and is never rendered.
+    'kilo-chat': 'Kilo Chat',
     linear: 'Linear',
     'local-news': 'Local News',
     web: 'Web Search',
   };
   const markdown = buildBriefingMarkdown({
     dateKey,
-    generatedAt: new Date(),
+    generatedAt,
     statuses: sources.map(source => ({
       source: source.source,
       configured: source.configured,
       ok: source.ok,
       summary: source.summary,
     })),
-    sections: sources.map(source => ({
-      title: source.sectionTitle ?? DEFAULT_SECTION_TITLE[source.source],
-      lines: source.sectionLines,
-    })),
+    sections: sources.flatMap(
+      source =>
+        source.sections ?? [
+          {
+            title: source.sectionTitle ?? DEFAULT_SECTION_TITLE[source.source],
+            lines: source.sectionLines,
+          },
+        ]
+    ),
     failures,
   });
 
@@ -1474,7 +1562,7 @@ async function generateBriefing(
 
   await patchStoredStatus(paths, {
     lastGeneratedDate: dateKey,
-    lastGeneratedAt: new Date().toISOString(),
+    lastGeneratedAt: generatedAt.toISOString(),
     lastPath: filePath,
     sourceSummary: sources.map(source => ({
       source: source.source,
