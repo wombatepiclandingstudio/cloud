@@ -1,7 +1,7 @@
 import { getEnvVariable } from '@/lib/dotenvx';
 import 'server-only'; // This file imports the database and can therefore only be used on the server side.
 import Stripe from 'stripe';
-import { client } from './stripe-client';
+import { client } from '@/lib/stripe-client';
 import { captureException } from '@sentry/nextjs';
 import { db, auto_deleted_at } from '@/lib/drizzle';
 import type { User, PaymentMethod, Organization } from '@kilocode/db/schema';
@@ -15,16 +15,16 @@ import {
 } from '@kilocode/db/schema';
 import { and, eq, inArray, isNull, ne, not, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import type { FraudDetectionHeaders } from './utils';
-import { EmptyFraudDetectionHeaders, toNonNullish } from './utils';
+import type { FraudDetectionHeaders } from '@/lib/utils';
+import { EmptyFraudDetectionHeaders, toNonNullish } from '@/lib/utils';
 import { logExceptInTest, sentryLogger, warnExceptInTest } from '@/lib/utils.server';
-import { APP_URL } from './constants';
+import { APP_URL } from '@/lib/constants';
 import {
   AUTO_TOP_UP_THRESHOLD_DOLLARS,
   DEFAULT_ORG_AUTO_TOP_UP_AMOUNT_CENTS,
   SYSTEM_AUTO_TOP_UP_USER_ID,
-} from './autoTopUpConstants';
-import { findUserByStripeCustomerId } from './user';
+} from '@/lib/autoTopUpConstants';
+import { findUserByStripeCustomerId } from '@/lib/user';
 import type { UnifiedInvoice } from '@/types/billing';
 import type { StripeConfig } from '@/lib/credits';
 import { processTopUp } from '@/lib/credits';
@@ -47,6 +47,7 @@ import {
 import { appendKiloPassAuditLog } from '@/lib/kilo-pass/issuance';
 import { maybeMapStripeScheduleStatusToDb } from '@/lib/kilo-pass/scheduled-change-release';
 import { invoiceLooksLikeKiloPassByPriceId } from '@/lib/kilo-pass/stripe-invoice-classifier.server';
+import { getKiloPassMetadataFromStripeMetadata } from '@/lib/kilo-pass/stripe-handlers-metadata';
 import {
   handleKiloClawSubscriptionCreated,
   handleKiloClawSubscriptionUpdated,
@@ -54,8 +55,8 @@ import {
   handleKiloClawScheduleEvent,
   handleKiloClawInvoicePaid,
 } from '@/lib/kiloclaw/stripe-handlers';
-import { enqueueImpactSaleReversalForCharge } from '@/lib/affiliate-events';
-import { markPersonalKiloClawReferralPaymentAdverse } from '@/lib/kiloclaw-referrals';
+import { enqueueImpactSaleReversalForCharge } from '@/lib/impact/affiliate-events';
+import { markPersonalKiloClawReferralPaymentAdverse } from '@/lib/impact/kiloclaw-referrals';
 import { invoiceLooksLikeKiloClawByPriceId } from '@/lib/kiloclaw/stripe-invoice-classifier.server';
 import { reportEvents } from '@/lib/ai-gateway/abuse-service';
 import {
@@ -73,6 +74,12 @@ type KiloClawChargeContext = {
   invoiceId: string;
 };
 
+type AffiliateDisputeSaleKind = 'kiloclaw' | 'kilo-pass';
+
+type AffiliateDisputeChargeContext = KiloClawChargeContext & {
+  saleKind: AffiliateDisputeSaleKind;
+};
+
 async function getKiloClawChargeContext(chargeId: string): Promise<KiloClawChargeContext | null> {
   const charge: Stripe.Charge & { invoice?: string | Stripe.Invoice | null } =
     await client.charges.retrieve(chargeId, { expand: ['invoice'] });
@@ -84,6 +91,43 @@ async function getKiloClawChargeContext(chargeId: string): Promise<KiloClawCharg
   return {
     chargeId,
     invoiceId: invoice.id,
+  };
+}
+
+function getAffiliateDisputeSaleKind(invoice: Stripe.Invoice): AffiliateDisputeSaleKind | null {
+  if (invoiceLooksLikeKiloClawByPriceId(invoice)) {
+    return 'kiloclaw';
+  }
+
+  const kiloPassMetadata = getKiloPassMetadataFromStripeMetadata(
+    invoice.parent?.subscription_details?.metadata
+  );
+  if (invoiceLooksLikeKiloPassByPriceId(invoice) || kiloPassMetadata !== null) {
+    return 'kilo-pass';
+  }
+
+  return null;
+}
+
+async function getAffiliateDisputeChargeContext(
+  chargeId: string
+): Promise<AffiliateDisputeChargeContext | null> {
+  const charge: Stripe.Charge & { invoice?: string | Stripe.Invoice | null } =
+    await client.charges.retrieve(chargeId, { expand: ['invoice'] });
+  const invoice = charge.invoice;
+  if (!invoice || typeof invoice === 'string') {
+    return null;
+  }
+
+  const saleKind = getAffiliateDisputeSaleKind(invoice);
+  if (!saleKind) {
+    return null;
+  }
+
+  return {
+    chargeId,
+    invoiceId: invoice.id,
+    saleKind,
   };
 }
 
@@ -673,8 +717,11 @@ export async function processStripePaymentEventHook(event: Stripe.Event) {
       // Kilo Pass invoice.paid events should be routed to the Kilo Pass handler first.
       // If it is a Kilo Pass invoice, no other invoice.paid handler should run.
       const isKiloPassByPriceId = invoiceLooksLikeKiloPassByPriceId(invoice);
+      const isKiloPassByInvoiceMetadata =
+        getKiloPassMetadataFromStripeMetadata(invoice.parent?.subscription_details?.metadata) !==
+        null;
 
-      if (isKiloPassByPriceId) {
+      if (isKiloPassByPriceId || isKiloPassByInvoiceMetadata) {
         await handleKiloPassInvoicePaid({ eventId: event.id, invoice, stripe: client });
         break;
       }
@@ -829,23 +876,37 @@ export async function processStripePaymentEventHook(event: Stripe.Event) {
         break;
       }
 
-      const kiloClawCharge = await getKiloClawChargeContext(chargeId);
-      if (!kiloClawCharge) {
+      const affiliateDisputeCharge = await getAffiliateDisputeChargeContext(chargeId);
+      if (!affiliateDisputeCharge) {
         break;
       }
 
-      await enqueueImpactSaleReversalForCharge({
-        stripeChargeId: kiloClawCharge.chargeId,
-        disputeId: dispute.id,
-        amount: dispute.amount / 100,
-        currency: dispute.currency,
-        eventDate: new Date(dispute.created * 1000),
-      });
-      await markPersonalKiloClawReferralPaymentAdverse({
-        sourcePaymentId: kiloClawCharge.invoiceId,
-        reason: 'chargeback',
-        occurredAt: new Date(dispute.created * 1000),
-      });
+      try {
+        await enqueueImpactSaleReversalForCharge({
+          stripeChargeId: affiliateDisputeCharge.chargeId,
+          disputeId: dispute.id,
+          amount: dispute.amount / 100,
+          currency: dispute.currency,
+          eventDate: new Date(dispute.created * 1000),
+        });
+      } catch (error) {
+        sentryLogger('stripe', 'warning')(
+          'Impact sale reversal enqueue failed for eligible sale dispute',
+          {
+            stripe_charge_id: affiliateDisputeCharge.chargeId,
+            stripe_invoice_id: affiliateDisputeCharge.invoiceId,
+            dispute_id: dispute.id,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+      }
+      if (affiliateDisputeCharge.saleKind === 'kiloclaw') {
+        await markPersonalKiloClawReferralPaymentAdverse({
+          sourcePaymentId: affiliateDisputeCharge.invoiceId,
+          reason: 'chargeback',
+          occurredAt: new Date(dispute.created * 1000),
+        });
+      }
       break;
     }
 

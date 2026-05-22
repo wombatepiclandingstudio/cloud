@@ -3,9 +3,17 @@ process.env.STRIPE_KILOCLAW_2026_03_19_STANDARD_PRICE_ID ||= 'price_legacy_stand
 process.env.STRIPE_KILOCLAW_2026_03_19_COMMIT_PRICE_ID ||= 'price_legacy_commit';
 process.env.STRIPE_KILOCLAW_2026_05_10_STANDARD_PRICE_ID ||= 'price_current_standard';
 process.env.STRIPE_KILOCLAW_2026_05_10_COMMIT_PRICE_ID ||= 'price_current_commit';
+process.env.STRIPE_KILO_PASS_TIER_19_MONTHLY_PRICE_ID ||= 'price_test_kilo_pass_tier_19_monthly';
+process.env.STRIPE_KILO_PASS_TIER_19_YEARLY_PRICE_ID ||= 'price_test_kilo_pass_tier_19_yearly';
+process.env.STRIPE_KILO_PASS_TIER_49_MONTHLY_PRICE_ID ||= 'price_test_kilo_pass_tier_49_monthly';
+process.env.STRIPE_KILO_PASS_TIER_49_YEARLY_PRICE_ID ||= 'price_test_kilo_pass_tier_49_yearly';
+process.env.STRIPE_KILO_PASS_TIER_199_MONTHLY_PRICE_ID ||= 'price_test_kilo_pass_tier_199_monthly';
+process.env.STRIPE_KILO_PASS_TIER_199_YEARLY_PRICE_ID ||= 'price_test_kilo_pass_tier_199_yearly';
 
 const CURRENT_KILOCLAW_STANDARD_PRICE_ID =
   process.env.STRIPE_KILOCLAW_2026_05_10_STANDARD_PRICE_ID ?? 'price_current_standard';
+const CURRENT_KILO_PASS_TIER_19_MONTHLY_PRICE_ID =
+  process.env.STRIPE_KILO_PASS_TIER_19_MONTHLY_PRICE_ID ?? 'price_test_kilo_pass_tier_19_monthly';
 
 import { describe, test, expect, beforeEach } from '@jest/globals';
 import type * as creditsModule from '@/lib/credits';
@@ -67,8 +75,8 @@ import {
   user_affiliate_events,
 } from '@kilocode/db/schema';
 import { db, auto_deleted_at } from '@/lib/drizzle';
-import { insertTestUser } from './helpers/user.helper';
-import { createTestPaymentMethod } from './helpers/payment-method.helper';
+import { insertTestUser } from '@/tests/helpers/user.helper';
+import { createTestPaymentMethod } from '@/tests/helpers/payment-method.helper';
 import { eq, and, count } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import { createOrganization } from '@/lib/organizations/organizations';
@@ -79,6 +87,7 @@ import {
   KiloPassTier,
 } from '@/lib/kilo-pass/enums';
 import type * as kiloclawStripeHandlersModule from '@/lib/kiloclaw/stripe-handlers';
+import type * as kiloPassStripeHandlersModule from '@/lib/kilo-pass/stripe-handlers';
 import { cleanupDbForTest } from '@/lib/drizzle';
 import { processTopUp } from '@/lib/credits';
 import { processTopupForOrganization } from '@/lib/organizations/organization-billing';
@@ -736,6 +745,90 @@ describe('processStripePaymentEventHook', () => {
     expect(reversalEvents[0]?.payload_json.disputeId).toBe('dp_123');
   });
 
+  test('charge.dispute.created maps a metadata-resolved Kilo Pass partial dispute to its sale reversal', async () => {
+    await cleanupDbForTest();
+    testUser = await insertTestUser();
+
+    await db.insert(user_affiliate_attributions).values({
+      user_id: testUser.id,
+      provider: 'impact',
+      tracking_id: 'impact-click-123',
+    });
+
+    await db.insert(user_affiliate_events).values({
+      user_id: testUser.id,
+      provider: 'impact',
+      event_type: 'sale',
+      dedupe_key: 'affiliate:impact:sale:in_kilo_pass_metadata_dispute',
+      delivery_state: 'delivered',
+      payload_json: {
+        trackingId: 'impact-click-123',
+        customerId: testUser.id,
+        customerEmailHash: 'hashed-email',
+        orderId: 'in_kilo_pass_metadata_dispute',
+        eventDate: '2026-04-09T10:00:00.000Z',
+        amount: 29,
+        currencyCode: 'usd',
+        stripeChargeId: 'ch_kilo_pass_metadata_dispute',
+        impactActionId: '1000.2000.3000',
+      },
+      stripe_charge_id: 'ch_kilo_pass_metadata_dispute',
+      impact_action_id: '1000.2000.3000',
+    });
+
+    const { client } = await import('@/lib/stripe-client');
+    const kiloPassInvoice = {
+      id: 'in_kilo_pass_metadata_dispute',
+      object: 'invoice',
+      parent: {
+        subscription_details: {
+          metadata: {
+            type: 'kilo-pass',
+            kiloUserId: testUser.id,
+            tier: KiloPassTier.Tier19,
+            cadence: KiloPassCadence.Monthly,
+          },
+        },
+      },
+      lines: { data: [] },
+    } as unknown as Stripe.Invoice;
+    const retrieveSpy = jest.spyOn(client.charges, 'retrieve').mockResolvedValue({
+      invoice: kiloPassInvoice,
+      lastResponse: { headers: {}, requestId: 'req_test', statusCode: 200 },
+    } as unknown as Stripe.Response<Stripe.Charge>);
+
+    const event: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_kilo_pass_metadata_partial',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_kilo_pass_metadata_partial',
+          charge: 'ch_kilo_pass_metadata_dispute',
+          amount: 900,
+        }),
+        previous_attributes: {},
+      },
+    };
+
+    await processStripePaymentEventHook(event);
+    retrieveSpy.mockRestore();
+
+    const reversalEvents = await db
+      .select()
+      .from(user_affiliate_events)
+      .where(eq(user_affiliate_events.event_type, 'sale_reversal'));
+
+    expect(reversalEvents).toHaveLength(1);
+    expect(reversalEvents[0]).toMatchObject({
+      user_id: testUser.id,
+      delivery_state: 'queued',
+      stripe_charge_id: 'ch_kilo_pass_metadata_dispute',
+      dedupe_key: 'affiliate:impact:sale_reversal:ch_kilo_pass_metadata_dispute',
+    });
+    expect(reversalEvents[0]?.payload_json.disputeId).toBe('dp_kilo_pass_metadata_partial');
+  });
+
   test('charge.dispute.created persists pending row for unmatched KiloClaw charge', async () => {
     await cleanupDbForTest();
     testUser = await insertTestUser();
@@ -854,30 +947,329 @@ describe('processStripePaymentEventHook', () => {
     expect(reversalEvents).toHaveLength(0);
   });
 
-  test('charge.dispute.created skips non-KiloClaw charges (e.g., Kilo Pass, top-ups)', async () => {
+  test('charge.dispute.created persists pending row for unmatched Kilo Pass invoice charge', async () => {
     await cleanupDbForTest();
     testUser = await insertTestUser();
 
     const { client } = await import('@/lib/stripe-client');
-    const nonKiloClawInvoice = {
+    const kiloPassInvoice = {
+      id: 'in_kilo_pass_pending',
       object: 'invoice',
       lines: {
-        data: [{ pricing: { price_details: { price: 'price_kilo_pass_not_kiloclaw' } } }],
+        data: [
+          { pricing: { price_details: { price: CURRENT_KILO_PASS_TIER_19_MONTHLY_PRICE_ID } } },
+        ],
       },
     } as unknown as Stripe.Invoice;
     const retrieveSpy = jest.spyOn(client.charges, 'retrieve').mockResolvedValue({
-      invoice: nonKiloClawInvoice,
+      invoice: kiloPassInvoice,
       lastResponse: { headers: {}, requestId: 'req_test', statusCode: 200 },
     } as unknown as Stripe.Response<Stripe.Charge>);
 
     const event: Stripe.Event = {
       ...baseStripeEvent(),
-      id: 'evt_dispute_non_kiloclaw',
+      id: 'evt_dispute_kilo_pass_pending',
       type: 'charge.dispute.created',
       data: {
         object: sampleStripeDispute({
-          id: 'dp_non_kiloclaw',
-          charge: 'ch_non_kiloclaw',
+          id: 'dp_kilo_pass_pending',
+          charge: 'ch_kilo_pass_missing',
+        }),
+        previous_attributes: {},
+      },
+    };
+
+    await processStripePaymentEventHook(event);
+
+    const reversalEvents = await db
+      .select()
+      .from(user_affiliate_events)
+      .where(eq(user_affiliate_events.event_type, 'sale_reversal'));
+    const pendingRows = await db.select().from(pending_impact_sale_reversals);
+
+    expect(reversalEvents).toHaveLength(0);
+    expect(pendingRows).toHaveLength(1);
+    expect(pendingRows[0]).toMatchObject({
+      stripe_charge_id: 'ch_kilo_pass_missing',
+      dispute_id: 'dp_kilo_pass_pending',
+    });
+
+    retrieveSpy.mockRestore();
+  });
+
+  test('charge.dispute.created dedupes duplicate pending Kilo Pass reversal intent', async () => {
+    await cleanupDbForTest();
+    testUser = await insertTestUser();
+
+    const { client } = await import('@/lib/stripe-client');
+    const kiloPassInvoice = {
+      id: 'in_kilo_pass_duplicate',
+      object: 'invoice',
+      lines: {
+        data: [
+          { pricing: { price_details: { price: CURRENT_KILO_PASS_TIER_19_MONTHLY_PRICE_ID } } },
+        ],
+      },
+    } as unknown as Stripe.Invoice;
+    const retrieveSpy = jest.spyOn(client.charges, 'retrieve').mockResolvedValue({
+      invoice: kiloPassInvoice,
+      lastResponse: { headers: {}, requestId: 'req_test', statusCode: 200 },
+    } as unknown as Stripe.Response<Stripe.Charge>);
+
+    const firstEvent: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_kilo_pass_duplicate_first',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_kilo_pass_duplicate_first',
+          charge: 'ch_kilo_pass_duplicate',
+        }),
+        previous_attributes: {},
+      },
+    };
+    const secondEvent: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_kilo_pass_duplicate_second',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_kilo_pass_duplicate_second',
+          charge: 'ch_kilo_pass_duplicate',
+        }),
+        previous_attributes: {},
+      },
+    };
+
+    await processStripePaymentEventHook(firstEvent);
+    await processStripePaymentEventHook(secondEvent);
+
+    const reversalEvents = await db
+      .select()
+      .from(user_affiliate_events)
+      .where(eq(user_affiliate_events.event_type, 'sale_reversal'));
+    const pendingRows = await db.select().from(pending_impact_sale_reversals);
+
+    expect(reversalEvents).toHaveLength(0);
+    expect(pendingRows).toHaveLength(1);
+    expect(pendingRows[0]).toMatchObject({
+      stripe_charge_id: 'ch_kilo_pass_duplicate',
+      dispute_id: 'dp_kilo_pass_duplicate_first',
+    });
+
+    retrieveSpy.mockRestore();
+  });
+
+  test('duplicate deferred Kilo Pass disputes materialize one reversal after sale identity is recoverable', async () => {
+    await cleanupDbForTest();
+    testUser = await insertTestUser();
+
+    const { client } = await import('@/lib/stripe-client');
+    const kiloPassInvoice = {
+      id: 'in_kilo_pass_deferred_materialization',
+      object: 'invoice',
+      parent: {
+        subscription_details: {
+          metadata: {
+            type: 'kilo-pass',
+            kiloUserId: testUser.id,
+            tier: KiloPassTier.Tier19,
+            cadence: KiloPassCadence.Monthly,
+          },
+        },
+      },
+      lines: { data: [] },
+    } as unknown as Stripe.Invoice;
+    const retrieveSpy = jest.spyOn(client.charges, 'retrieve').mockResolvedValue({
+      invoice: kiloPassInvoice,
+      lastResponse: { headers: {}, requestId: 'req_test', statusCode: 200 },
+    } as unknown as Stripe.Response<Stripe.Charge>);
+
+    const firstEvent: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_kilo_pass_deferred_first',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_kilo_pass_deferred_first',
+          charge: 'ch_kilo_pass_deferred_materialization',
+        }),
+        previous_attributes: {},
+      },
+    };
+    const duplicateEvent: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_kilo_pass_deferred_duplicate',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_kilo_pass_deferred_duplicate',
+          charge: 'ch_kilo_pass_deferred_materialization',
+        }),
+        previous_attributes: {},
+      },
+    };
+
+    await processStripePaymentEventHook(firstEvent);
+    await processStripePaymentEventHook(duplicateEvent);
+
+    await db.insert(user_affiliate_events).values({
+      user_id: testUser.id,
+      provider: 'impact',
+      event_type: 'sale',
+      dedupe_key: 'affiliate:impact:sale:in_kilo_pass_deferred_materialization',
+      delivery_state: 'delivered',
+      payload_json: {
+        trackingId: 'impact-click-123',
+        customerId: testUser.id,
+        customerEmailHash: 'hashed-email',
+        orderId: 'in_kilo_pass_deferred_materialization',
+        eventDate: '2026-04-09T10:00:00.000Z',
+        amount: 29,
+        currencyCode: 'usd',
+        stripeChargeId: 'ch_kilo_pass_deferred_materialization',
+        impactActionId: '1000.2000.3000',
+      },
+      stripe_charge_id: 'ch_kilo_pass_deferred_materialization',
+    });
+
+    const { dispatchQueuedAffiliateEvents } = await import('@/lib/impact/affiliate-events');
+    await dispatchQueuedAffiliateEvents();
+
+    const pendingRows = await db.select().from(pending_impact_sale_reversals);
+    const reversalEvents = await db
+      .select()
+      .from(user_affiliate_events)
+      .where(eq(user_affiliate_events.event_type, 'sale_reversal'));
+
+    expect(pendingRows).toHaveLength(0);
+    expect(reversalEvents).toHaveLength(1);
+    expect(reversalEvents[0]).toMatchObject({
+      parent_event_id: expect.any(String),
+      stripe_charge_id: 'ch_kilo_pass_deferred_materialization',
+      dedupe_key: 'affiliate:impact:sale_reversal:ch_kilo_pass_deferred_materialization',
+    });
+    expect(reversalEvents[0]?.payload_json.disputeId).toBe('dp_kilo_pass_deferred_first');
+
+    retrieveSpy.mockRestore();
+  });
+
+  test('charge.dispute.closed won resolution does not auto-restore a reversed affiliate commission', async () => {
+    await cleanupDbForTest();
+    testUser = await insertTestUser();
+
+    await db.insert(user_affiliate_events).values({
+      user_id: testUser.id,
+      provider: 'impact',
+      event_type: 'sale_reversal',
+      dedupe_key: 'affiliate:impact:sale_reversal:ch_kilo_pass_won_dispute',
+      delivery_state: 'delivered',
+      payload_json: {
+        trackingId: 'impact-click-123',
+        customerId: testUser.id,
+        customerEmailHash: 'hashed-email',
+        orderId: 'in_kilo_pass_won_dispute',
+        eventDate: '2026-04-10T10:00:00.000Z',
+        amount: 29,
+        currencyCode: 'usd',
+        stripeChargeId: 'ch_kilo_pass_won_dispute',
+        impactActionId: '1000.2000.3000',
+        disputeId: 'dp_kilo_pass_won_dispute',
+      },
+      stripe_charge_id: 'ch_kilo_pass_won_dispute',
+      impact_action_id: '1000.2000.3000',
+    });
+
+    const event: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_kilo_pass_won_resolution',
+      type: 'charge.dispute.closed',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_kilo_pass_won_dispute',
+          charge: 'ch_kilo_pass_won_dispute',
+          status: 'won',
+        }),
+        previous_attributes: {},
+      },
+    };
+
+    await processStripePaymentEventHook(event);
+
+    const affiliateEvents = await db.select().from(user_affiliate_events);
+    const pendingRows = await db.select().from(pending_impact_sale_reversals);
+
+    expect(affiliateEvents).toHaveLength(1);
+    expect(affiliateEvents[0]).toMatchObject({
+      event_type: 'sale_reversal',
+      delivery_state: 'delivered',
+      dedupe_key: 'affiliate:impact:sale_reversal:ch_kilo_pass_won_dispute',
+    });
+    expect(pendingRows).toHaveLength(0);
+  });
+
+  test('charge.dispute.created skips unrelated invoice charge disputes', async () => {
+    await cleanupDbForTest();
+    testUser = await insertTestUser();
+
+    const { client } = await import('@/lib/stripe-client');
+    const unrelatedInvoice = {
+      id: 'in_unrelated_dispute',
+      object: 'invoice',
+      lines: {
+        data: [{ pricing: { price_details: { price: 'price_unrelated_dispute' } } }],
+      },
+    } as unknown as Stripe.Invoice;
+    const retrieveSpy = jest.spyOn(client.charges, 'retrieve').mockResolvedValue({
+      invoice: unrelatedInvoice,
+      lastResponse: { headers: {}, requestId: 'req_test', statusCode: 200 },
+    } as unknown as Stripe.Response<Stripe.Charge>);
+
+    const event: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_unrelated_invoice',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_unrelated_invoice',
+          charge: 'ch_unrelated_invoice',
+        }),
+        previous_attributes: {},
+      },
+    };
+
+    await processStripePaymentEventHook(event);
+
+    const reversalEvents = await db
+      .select()
+      .from(user_affiliate_events)
+      .where(eq(user_affiliate_events.event_type, 'sale_reversal'));
+    const pendingRows = await db.select().from(pending_impact_sale_reversals);
+
+    expect(reversalEvents).toHaveLength(0);
+    expect(pendingRows).toHaveLength(0);
+
+    retrieveSpy.mockRestore();
+  });
+
+  test('charge.dispute.created skips charge disputes without an eligible invoice', async () => {
+    await cleanupDbForTest();
+    testUser = await insertTestUser();
+
+    const { client } = await import('@/lib/stripe-client');
+    const retrieveSpy = jest.spyOn(client.charges, 'retrieve').mockResolvedValue({
+      invoice: null,
+      lastResponse: { headers: {}, requestId: 'req_test', statusCode: 200 },
+    } as unknown as Stripe.Response<Stripe.Charge>);
+
+    const event: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_dispute_without_invoice',
+      type: 'charge.dispute.created',
+      data: {
+        object: sampleStripeDispute({
+          id: 'dp_without_invoice',
+          charge: 'ch_without_invoice',
         }),
         previous_attributes: {},
       },
@@ -2017,6 +2409,73 @@ describe('handleSuccessfulChargeWithPayment (org/user routing & side-effects)', 
       });
     } finally {
       jest.dontMock('@/lib/kiloclaw/stripe-handlers');
+      jest.resetModules();
+    }
+  });
+
+  test('invoice.paid dispatches metadata-resolved Kilo Pass invoices without price SKU lines', async () => {
+    const handleKiloPassInvoicePaid = jest.fn<
+      Promise<void>,
+      [{ eventId: string; invoice: Stripe.Invoice; stripe: Stripe }]
+    >();
+    handleKiloPassInvoicePaid.mockResolvedValue(undefined);
+
+    const event: Stripe.Event = {
+      ...baseStripeEvent(),
+      id: 'evt_kilo_pass_metadata_dispatch',
+      type: 'invoice.paid',
+      data: {
+        object: {
+          id: 'in_kilo_pass_metadata_dispatch',
+          object: 'invoice',
+          amount_paid: 1900,
+          currency: 'usd',
+          parent: {
+            subscription_details: {
+              subscription: 'sub_kilo_pass_metadata_dispatch',
+              metadata: {
+                type: 'kilo-pass',
+                kiloUserId: 'user_kilo_pass_metadata_dispatch',
+                tier: KiloPassTier.Tier19,
+                cadence: KiloPassCadence.Monthly,
+              },
+            },
+          },
+          lines: {
+            data: [],
+          },
+        } as unknown as Stripe.Invoice,
+        previous_attributes: {},
+      },
+    };
+
+    try {
+      jest.resetModules();
+      jest.doMock('@/lib/kilo-pass/stripe-handlers', () => {
+        const actual = jest.requireActual<typeof kiloPassStripeHandlersModule>(
+          '@/lib/kilo-pass/stripe-handlers'
+        );
+        return {
+          __esModule: true,
+          ...actual,
+          handleKiloPassInvoicePaid,
+        };
+      });
+
+      await jest.isolateModulesAsync(async () => {
+        const { processStripePaymentEventHook: isolatedProcessStripePaymentEventHook } =
+          await import('@/lib/stripe');
+        await isolatedProcessStripePaymentEventHook(event);
+      });
+
+      expect(handleKiloPassInvoicePaid).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventId: 'evt_kilo_pass_metadata_dispatch',
+          invoice: event.data.object,
+        })
+      );
+    } finally {
+      jest.dontMock('@/lib/kilo-pass/stripe-handlers');
       jest.resetModules();
     }
   });

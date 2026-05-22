@@ -16,7 +16,7 @@ import {
   reverseImpactAction,
   sendImpactConversionPayload,
 } from '@/lib/impact';
-import { logImpactReferralDebug } from '@/lib/impact-debug';
+import { logImpactReferralDebug } from '@/lib/impact/debug';
 import { sentryLogger } from '@/lib/utils.server';
 import {
   kilocode_users,
@@ -248,7 +248,7 @@ function computeNextRetryAt(attemptCount: number): string {
 }
 
 function eventHasImpactMapping(event: AffiliateEventRow): boolean {
-  return Boolean(event.impact_action_id || event.impact_submission_uri);
+  return Boolean(getImpactActionId(event) || getImpactSubmissionUri(event));
 }
 
 function getImpactActionId(event: AffiliateEventRow): string | null {
@@ -294,21 +294,20 @@ async function markAffiliateEventDelivered(
           mapping.impactSubmissionUri ?? event.payload_json.impactSubmissionUri ?? null,
       } satisfies AffiliateEventPayloadJson)
     : event.payload_json;
+  const completionTimestamp = params?.clearClaimedAt ? null : new Date().toISOString();
 
   const updateValues: {
     delivery_state: 'delivered';
     next_retry_at: null;
-    claimed_at?: null;
+    claimed_at: string | null;
     impact_action_id?: string | null;
     impact_submission_uri?: string | null;
     payload_json?: AffiliateEventPayloadJson;
   } = {
     delivery_state: 'delivered',
     next_retry_at: null,
+    claimed_at: completionTimestamp,
   };
-  if (params?.clearClaimedAt) {
-    updateValues.claimed_at = null;
-  }
   if (mapping) {
     updateValues.impact_action_id = mapping.impactActionId ?? event.impact_action_id ?? null;
     updateValues.impact_submission_uri =
@@ -343,7 +342,7 @@ async function markAffiliateEventDelivered(
       ...event,
       delivery_state: 'delivered',
       next_retry_at: null,
-      claimed_at: params?.clearClaimedAt ? null : event.claimed_at,
+      claimed_at: completionTimestamp,
       impact_action_id: mapping
         ? (mapping.impactActionId ?? event.impact_action_id ?? null)
         : event.impact_action_id,
@@ -444,6 +443,17 @@ async function promoteBlockedChildren(
       ${sql.identifier(user_affiliate_events.claimed_at.name)} = NULL
     WHERE ${user_affiliate_events.parent_event_id} = ${parentEventId}::uuid
       AND ${user_affiliate_events.delivery_state} = 'blocked'
+      AND EXISTS (
+        SELECT 1
+        FROM ${user_affiliate_events} AS parent_event
+        WHERE parent_event.id = ${parentEventId}::uuid
+          AND (
+            ${user_affiliate_events.event_type} = 'sale_reversal'
+            OR parent_event.provider <> 'impact'
+            OR parent_event.event_type <> 'signup'
+            OR parent_event.claimed_at IS NOT NULL
+          )
+      )
       AND (
         ${user_affiliate_events.event_type} <> 'sale_reversal'
         OR EXISTS (
@@ -492,6 +502,12 @@ async function reconcileBlockedChildrenWithDeliveredParents(
         FROM ${user_affiliate_events} AS parent_event
         WHERE parent_event.id = ${user_affiliate_events.parent_event_id}
           AND parent_event.delivery_state = 'delivered'
+          AND (
+            ${user_affiliate_events.event_type} = 'sale_reversal'
+            OR parent_event.provider <> 'impact'
+            OR parent_event.event_type <> 'signup'
+            OR parent_event.claimed_at IS NOT NULL
+          )
           AND (
             ${user_affiliate_events.event_type} <> 'sale_reversal'
             OR parent_event.impact_action_id IS NOT NULL
@@ -615,8 +631,10 @@ async function claimQueuedEvents(
                 ${user_affiliate_events.event_type} = 'sale_reversal'
                 OR parent_event.provider <> 'impact'
                 OR parent_event.event_type <> 'signup'
-                OR parent_event.claimed_at IS NULL
-                OR parent_event.claimed_at <= ${impactParentProcessedBefore}::timestamptz
+                OR (
+                  parent_event.claimed_at IS NOT NULL
+                  AND parent_event.claimed_at <= ${impactParentProcessedBefore}::timestamptz
+                )
               )
           )
         )
@@ -920,6 +938,11 @@ export async function enqueueAffiliateEventForUser(
             FROM ${user_affiliate_events}
             WHERE ${user_affiliate_events.id} = ${parentEvent.id}::uuid
               AND ${user_affiliate_events.delivery_state} = 'delivered'
+              AND (
+                ${user_affiliate_events.provider} <> 'impact'
+                OR ${user_affiliate_events.event_type} <> 'signup'
+                OR ${user_affiliate_events.claimed_at} IS NOT NULL
+              )
           )
           THEN 'queued'
           ELSE 'blocked'
@@ -1218,9 +1241,7 @@ async function dispatchSaleReversalEvent(
       return 'retried';
     } else {
       await handlePermanentFailure(database, event, 'submission_failed', {
-        error: resolution.ok
-          ? 'Impact submission resolved without action ID'
-          : (resolution.error ?? resolution.responseBody),
+        error: resolution.ok ? 'Impact submission resolved without action ID' : resolution.error,
         statusCode: resolution.ok ? undefined : resolution.statusCode,
       });
       logWarning('Impact sale reversal requires manual follow-up because action mapping failed', {
@@ -1274,7 +1295,7 @@ async function dispatchSaleReversalEvent(
   ) {
     await handlePermanentFailure(database, event, reversalResult.failureKind, {
       statusCode: reversalResult.statusCode,
-      error: reversalResult.error ?? reversalResult.responseBody,
+      error: reversalResult.error,
     });
     logWarning('Impact sale reversal requires manual follow-up after permanent failure', {
       ...buildAffiliateEventLogFields(event),
@@ -1450,7 +1471,7 @@ export async function dispatchQueuedAffiliateEvents(params?: {
         });
         await handlePermanentFailure(database, event, result.failureKind, {
           statusCode: result.statusCode,
-          error: result.error ?? result.responseBody,
+          error: result.error,
         });
         summary.failed += 1;
         continue;

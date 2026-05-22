@@ -1,11 +1,11 @@
 import { getEnvVariable } from '@/lib/dotenvx';
 import 'server-only';
-import { validateAuthorizationHeader, JWT_TOKEN_VERSION } from './tokens';
+import { validateAuthorizationHeader, JWT_TOKEN_VERSION } from '@/lib/tokens';
 import { NextResponse } from 'next/server';
 import { cookies, headers } from 'next/headers';
 
-import type { CreateOrUpdateUserArgs, CreateOrUpdateUserTrackingContext } from './user';
-import { findUserById, createOrUpdateUser, findAndSyncExistingUser } from './user';
+import type { CreateOrUpdateUserArgs, CreateOrUpdateUserTrackingContext } from '@/lib/user';
+import { findUserById, createOrUpdateUser, findAndSyncExistingUser } from '@/lib/user';
 import { db, readDb } from '@/lib/drizzle';
 import type {
   NextAuthOptions,
@@ -25,17 +25,17 @@ import DiscordProvider from 'next-auth/providers/discord';
 import WorkOSProvider from 'next-auth/providers/workos';
 import AppleProvider from 'next-auth/providers/apple';
 import CredentialsProvider from 'next-auth/providers/credentials';
-import { allow_fake_login, ORGANIZATION_ID_HEADER } from './constants';
+import { allow_fake_login, ORGANIZATION_ID_HEADER } from '@/lib/constants';
 import { PLATFORM } from '@/lib/integrations/core/constants';
 import { verifyAndConsumeMagicLinkToken } from '@/lib/auth/magic-link-tokens';
 import { redirect } from 'next/navigation';
-import { IMPACT_CLICK_ID_COOKIE } from '@/lib/impact-affiliate-utils';
-import { logImpactReferralDebug } from '@/lib/impact-debug';
-import { countryCodeFromHeaders, localeFromHeaders } from '@/lib/impact-referral';
+import { IMPACT_CLICK_ID_COOKIE } from '@/lib/impact/affiliate-utils';
+import { logImpactReferralDebug } from '@/lib/impact/debug';
+import { countryCodeFromHeaders, localeFromHeaders } from '@/lib/impact/referral';
 import {
   parseImpactAffiliateTouchFromUrl,
   parseImpactReferralTouchFromUrl,
-} from '@/lib/impact-referral-utils';
+} from '@/lib/impact/referral-utils';
 import { classifyOrganizationEntitlement } from '@/lib/organizations/trial-utils';
 import { getMostRecentSeatPurchase } from '@/lib/organizations/organization-seats';
 import { secondsInDay } from 'date-fns/constants';
@@ -83,7 +83,7 @@ import {
 import jwt from 'jsonwebtoken';
 import type { UUID } from 'node:crypto';
 import { logExceptInTest, sentryLogger } from '@/lib/utils.server';
-import { processSSOUserLogin } from '@/lib/sso-user';
+import { processSSOUserLogin } from '@/lib/user/sso';
 import { getLowerDomainFromEmail } from '@/lib/utils';
 import { z } from 'zod';
 import { v5 as uuidv5 } from 'uuid';
@@ -724,7 +724,26 @@ const authOptions: NextAuthOptions = {
         const requestHeaders = await headers();
 
         if (accountInfo.provider === 'workos') {
-          return processSSOUserLogin(accountInfo, requestHeaders);
+          const { affiliateTrackingId, trackingContext } = !isAccountLinking
+            ? await getImpactTrackingContextFromAuthFlow(requestHeaders)
+            : { affiliateTrackingId: null, trackingContext: {} };
+
+          logImpactReferralDebug(
+            'Auth flow forwarding Impact tracking context to SSO user upsert',
+            {
+              provider: accountInfo.provider,
+              affiliateTrackingIdPresent: Boolean(affiliateTrackingId?.trim()),
+              affiliateTouchPresent: Boolean(trackingContext.affiliateTouch),
+              referralTouchPresent: Boolean(trackingContext.referralTouch),
+            }
+          );
+
+          return processSSOUserLogin(
+            accountInfo,
+            requestHeaders,
+            affiliateTrackingId,
+            trackingContext
+          );
         }
 
         // Validate Turnstile JWT for real OAuth logins (not fake logins or email auth)

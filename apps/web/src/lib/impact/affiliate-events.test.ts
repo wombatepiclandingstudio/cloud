@@ -9,9 +9,21 @@ import {
 import { and, eq, sql } from 'drizzle-orm';
 
 const originalFetch = global.fetch;
+const mockInfoLogger = jest.fn();
+const mockWarningLogger = jest.fn();
+const mockErrorLogger = jest.fn();
+
+jest.mock('@/lib/utils.server', () => ({
+  sentryLogger: (_scope: string, level: string) => {
+    if (level === 'error') return mockErrorLogger;
+    if (level === 'warning') return mockWarningLogger;
+    return mockInfoLogger;
+  },
+}));
 
 describe('affiliate-events', () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     jest.resetModules();
     process.env.IMPACT_ACCOUNT_SID = 'impact-account-sid';
     process.env.IMPACT_AUTH_TOKEN = 'impact-auth-token';
@@ -52,7 +64,7 @@ describe('affiliate-events', () => {
       buildAffiliateEventDedupeKey,
       enqueueAffiliateEventForUser,
       recordAffiliateAttributionAndQueueParentEvent,
-    } = await import('@/lib/affiliate-events');
+    } = await import('@/lib/impact/affiliate-events');
 
     const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -101,7 +113,7 @@ describe('affiliate-events', () => {
   }) {
     const stripeChargeId = params?.stripeChargeId ?? 'ch_sale_test_123';
     const { user } = await createQueuedSaleEvent({ stripeChargeId });
-    const { dispatchQueuedAffiliateEvents } = await import('@/lib/affiliate-events');
+    const { dispatchQueuedAffiliateEvents } = await import('@/lib/impact/affiliate-events');
 
     global.fetch = jest.fn().mockResolvedValue(
       params?.saleResponse === 'queued'
@@ -140,7 +152,7 @@ describe('affiliate-events', () => {
       buildAffiliateEventDedupeKey,
       enqueueAffiliateEventForUser,
       recordAffiliateAttributionAndQueueParentEvent,
-    } = await import('@/lib/affiliate-events');
+    } = await import('@/lib/impact/affiliate-events');
 
     await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -197,15 +209,20 @@ describe('affiliate-events', () => {
       dispatchQueuedAffiliateEvents,
       enqueueAffiliateEventForUser,
       recordAffiliateAttributionAndQueueParentEvent,
-    } = await import('@/lib/affiliate-events');
+    } = await import('@/lib/impact/affiliate-events');
 
-    await recordAffiliateAttributionAndQueueParentEvent({
+    const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
       provider: 'impact',
       trackingId: 'impact-click-123',
       customerEmail: user.google_user_email,
       eventDate: new Date('2026-04-09T10:00:00.000Z'),
     });
+
+    if (!parentEvent) {
+      throw new Error('Expected affiliate parent event');
+    }
+
     await enqueueAffiliateEventForUser({
       userId: user.id,
       provider: 'impact',
@@ -219,7 +236,14 @@ describe('affiliate-events', () => {
       orderId: 'IR_AN_64_TS',
     });
 
-    const fetchMock: typeof fetch = jest.fn(async () => new Response('', { status: 200 }));
+    const fetchMock: typeof fetch = jest.fn(async () => {
+      // Move claim time back mid-request; successful delivery must restart parent delay clock.
+      await db
+        .update(user_affiliate_events)
+        .set({ claimed_at: new Date(Date.now() - 6 * 60 * 1000).toISOString() })
+        .where(eq(user_affiliate_events.id, parentEvent.id));
+      return new Response('', { status: 200 });
+    });
     global.fetch = fetchMock;
 
     const summary = await dispatchQueuedAffiliateEvents();
@@ -242,14 +266,14 @@ describe('affiliate-events', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('dispatches a child immediately when the parent was delivered without a claimed_at timestamp', async () => {
+  it('keeps a child blocked when the parent was delivered without a claimed_at timestamp', async () => {
     const user = await insertTestUser();
     const {
       buildAffiliateEventDedupeKey,
       dispatchQueuedAffiliateEvents,
       enqueueAffiliateEventForUser,
       recordAffiliateAttributionAndQueueParentEvent,
-    } = await import('@/lib/affiliate-events');
+    } = await import('@/lib/impact/affiliate-events');
 
     const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -261,8 +285,7 @@ describe('affiliate-events', () => {
 
     expect(parentEvent).not.toBeNull();
 
-    // Simulate unconfigured delivery: parent is delivered with claimed_at cleared
-    // (as happens when sendImpactConversionPayload returns skipped: 'unconfigured').
+    // Simulate unconfigured delivery: parent is locally completed with claimed_at cleared.
     await db
       .update(user_affiliate_events)
       .set({
@@ -296,14 +319,78 @@ describe('affiliate-events', () => {
 
     expect(summary).toEqual({
       reclaimed: 0,
+      claimed: 0,
+      delivered: 0,
+      retried: 0,
+      failed: 0,
+      unblocked: 0,
+    });
+    expect(rows.map(row => row.delivery_state).sort()).toEqual(['blocked', 'delivered']);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('does not unblock a child when signup delivery is skipped because Impact is unconfigured', async () => {
+    const user = await insertTestUser();
+    const {
+      buildAffiliateEventDedupeKey,
+      enqueueAffiliateEventForUser,
+      recordAffiliateAttributionAndQueueParentEvent,
+    } = await import('@/lib/impact/affiliate-events');
+
+    const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
+      userId: user.id,
+      provider: 'impact',
+      trackingId: 'impact-click-123',
+      customerEmail: user.google_user_email,
+      eventDate: new Date('2026-04-09T10:00:00.000Z'),
+    });
+
+    expect(parentEvent).not.toBeNull();
+
+    await enqueueAffiliateEventForUser({
+      userId: user.id,
+      provider: 'impact',
+      eventType: 'trial_start',
+      dedupeKey: buildAffiliateEventDedupeKey({
+        provider: 'impact',
+        eventType: 'trial_start',
+        entityId: 'trial-subscription-unconfigured-dispatch',
+      }),
+      eventDate: new Date('2026-04-09T10:05:00.000Z'),
+      orderId: 'IR_AN_64_TS',
+    });
+
+    delete process.env.IMPACT_ACCOUNT_SID;
+    delete process.env.IMPACT_AUTH_TOKEN;
+    delete process.env.IMPACT_CAMPAIGN_ID;
+    jest.resetModules();
+    const { dispatchQueuedAffiliateEvents } = await import('@/lib/impact/affiliate-events');
+    const fetchMock: typeof fetch = jest.fn(async () => new Response('', { status: 200 }));
+    global.fetch = fetchMock;
+
+    const summary = await dispatchQueuedAffiliateEvents();
+    const rows = await db
+      .select()
+      .from(user_affiliate_events)
+      .where(eq(user_affiliate_events.user_id, user.id));
+
+    expect(summary).toEqual({
+      reclaimed: 0,
       claimed: 1,
       delivered: 1,
       retried: 0,
       failed: 0,
       unblocked: 0,
     });
-    expect(rows.map(row => row.delivery_state).sort()).toEqual(['delivered', 'delivered']);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(rows.find(row => row.event_type === 'signup')).toMatchObject({
+      delivery_state: 'delivered',
+      claimed_at: null,
+    });
+    expect(rows.find(row => row.event_type === 'trial_start')).toMatchObject({
+      delivery_state: 'blocked',
+      claimed_at: null,
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('delivers a queued child after the parent processing gap passes', async () => {
@@ -313,7 +400,7 @@ describe('affiliate-events', () => {
       dispatchQueuedAffiliateEvents,
       enqueueAffiliateEventForUser,
       recordAffiliateAttributionAndQueueParentEvent,
-    } = await import('@/lib/affiliate-events');
+    } = await import('@/lib/impact/affiliate-events');
 
     const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -371,7 +458,7 @@ describe('affiliate-events', () => {
   it('requeues 5xx failures with backoff', async () => {
     const user = await insertTestUser();
     const { dispatchQueuedAffiliateEvents, recordAffiliateAttributionAndQueueParentEvent } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -407,7 +494,7 @@ describe('affiliate-events', () => {
   it('marks 4xx failures as failed', async () => {
     const user = await insertTestUser();
     const { dispatchQueuedAffiliateEvents, recordAffiliateAttributionAndQueueParentEvent } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -417,8 +504,9 @@ describe('affiliate-events', () => {
       eventDate: new Date('2026-04-09T10:00:00.000Z'),
     });
 
+    const sensitiveProviderBody = 'ClickId=impact-click-123 buyer@example.com auth=secret';
     const fetchMock: typeof fetch = jest.fn(
-      async () => new Response('bad request', { status: 400 })
+      async () => new Response(sensitiveProviderBody, { status: 400 })
     );
     global.fetch = fetchMock;
 
@@ -437,12 +525,21 @@ describe('affiliate-events', () => {
     expect(row?.delivery_state).toBe('failed');
     expect(row?.attempt_count).toBe(1);
     expect(row?.claimed_at).toBeNull();
+    expect(mockErrorLogger).toHaveBeenCalledWith(
+      'Affiliate event delivery failed permanently',
+      expect.objectContaining({
+        failure_kind: 'http_4xx',
+        status_code: 400,
+        error: undefined,
+      })
+    );
+    expect(JSON.stringify(mockErrorLogger.mock.calls)).not.toContain(sensitiveProviderBody);
   });
 
   it('reclaims stale sending rows before dispatching', async () => {
     const user = await insertTestUser();
     const { dispatchQueuedAffiliateEvents, recordAffiliateAttributionAndQueueParentEvent } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -483,7 +580,7 @@ describe('affiliate-events', () => {
       dispatchQueuedAffiliateEvents,
       enqueueAffiliateEventForUser,
       recordAffiliateAttributionAndQueueParentEvent,
-    } = await import('@/lib/affiliate-events');
+    } = await import('@/lib/impact/affiliate-events');
 
     const parentEvent = await recordAffiliateAttributionAndQueueParentEvent({
       userId: user.id,
@@ -576,7 +673,7 @@ describe('affiliate-events', () => {
 
   it('blocks sale reversal until parent sale is delivered', async () => {
     const { user, saleEvent } = await createQueuedSaleEvent();
-    const { enqueueImpactSaleReversalForCharge } = await import('@/lib/affiliate-events');
+    const { enqueueImpactSaleReversalForCharge } = await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -599,7 +696,7 @@ describe('affiliate-events', () => {
   it('resolves queued sale submission to action id before reversal dispatch', async () => {
     const { user, saleEvent } = await createDeliveredSaleEvent({ saleResponse: 'queued' });
     const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -651,7 +748,116 @@ describe('affiliate-events', () => {
     );
   });
 
-  it('fails queued sale reversal permanently when submission resolution is unconfigured', async () => {
+  it('queues reversal when delivered sale identity remains recoverable from payload', async () => {
+    const { user, saleEvent } = await createDeliveredSaleEvent({ saleResponse: 'immediate' });
+    const { enqueueImpactSaleReversalForCharge } = await import('@/lib/impact/affiliate-events');
+
+    await db
+      .update(user_affiliate_events)
+      .set({
+        impact_action_id: null,
+        impact_submission_uri: null,
+      })
+      .where(eq(user_affiliate_events.id, saleEvent.id));
+
+    await enqueueImpactSaleReversalForCharge({
+      stripeChargeId: 'ch_sale_test_123',
+      disputeId: 'dp_payload_mapping',
+      amount: 29,
+      currency: 'usd',
+      eventDate: new Date('2026-04-10T10:00:00.000Z'),
+    });
+
+    const reversalEvents = (await getUserAffiliateEvents(user.id)).filter(
+      row => row.event_type === 'sale_reversal'
+    );
+
+    expect(reversalEvents).toHaveLength(1);
+    expect(reversalEvents[0]).toMatchObject({
+      delivery_state: 'queued',
+      impact_action_id: '1000.2000.3000',
+      stripe_charge_id: 'ch_sale_test_123',
+    });
+  });
+
+  it('keeps unrecoverable delivered sale identity observable without speculative reversal', async () => {
+    const { user, saleEvent } = await createQueuedSaleEvent({
+      stripeChargeId: 'ch_unrecoverable_sale_mapping',
+    });
+    const { enqueueImpactSaleReversalForCharge } = await import('@/lib/impact/affiliate-events');
+
+    await db
+      .update(user_affiliate_events)
+      .set({
+        delivery_state: 'delivered',
+        claimed_at: new Date('2026-04-09T10:10:00.000Z').toISOString(),
+        next_retry_at: null,
+      })
+      .where(eq(user_affiliate_events.id, saleEvent.id));
+
+    const reversal = await enqueueImpactSaleReversalForCharge({
+      stripeChargeId: 'ch_unrecoverable_sale_mapping',
+      disputeId: 'dp_unrecoverable_sale_mapping',
+      amount: 29,
+      currency: 'usd',
+      eventDate: new Date('2026-04-10T10:00:00.000Z'),
+    });
+
+    const reversalEvents = (await getUserAffiliateEvents(user.id)).filter(
+      row => row.event_type === 'sale_reversal'
+    );
+
+    expect(reversal).toBeNull();
+    expect(reversalEvents).toHaveLength(0);
+    expect(mockWarningLogger).toHaveBeenCalledWith(
+      'Impact sale reversal requires manual follow-up because delivered sale mapping is missing',
+      expect.objectContaining({
+        affiliate_event_type: 'sale_reversal',
+        stripe_charge_id: 'ch_unrecoverable_sale_mapping',
+        dispute_id: 'dp_unrecoverable_sale_mapping',
+      })
+    );
+  });
+
+  it('dispatches a full Impact action rejection for a partial sale dispute', async () => {
+    const { user } = await createDeliveredSaleEvent({ saleResponse: 'immediate' });
+    const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
+      await import('@/lib/impact/affiliate-events');
+
+    await enqueueImpactSaleReversalForCharge({
+      stripeChargeId: 'ch_sale_test_123',
+      disputeId: 'dp_partial_dispute',
+      amount: 9,
+      currency: 'usd',
+      eventDate: new Date('2026-04-10T10:00:00.000Z'),
+    });
+
+    const fetchMock = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          Status: 'QUEUED',
+          QueuedUri: '/Advertisers/impact-account-sid/APISubmissions/A-partial-reversal',
+        }),
+        { status: 200 }
+      )
+    ) as jest.MockedFunction<typeof fetch>;
+    global.fetch = fetchMock;
+
+    const summary = await dispatchQueuedAffiliateEvents();
+    const reversalEvent = (await getUserAffiliateEvents(user.id)).find(
+      row => row.event_type === 'sale_reversal'
+    );
+
+    expect(summary.delivered).toBe(1);
+    expect(reversalEvent?.delivery_state).toBe('delivered');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'DELETE' });
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('ActionId=1000.2000.3000');
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('DispositionCode=REJECTED');
+    expect(fetchMock.mock.calls[0]?.[1]?.body).not.toContain('Amount');
+  });
+
+  it('keeps queued sale reversal retryable when submission resolution is unconfigured', async () => {
     const { user } = await createDeliveredSaleEvent({ saleResponse: 'queued' });
 
     delete process.env.IMPACT_ACCOUNT_SID;
@@ -660,7 +866,7 @@ describe('affiliate-events', () => {
     jest.resetModules();
 
     const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -675,17 +881,56 @@ describe('affiliate-events', () => {
       row => row.event_type === 'sale_reversal'
     );
 
+    expect(summary.failed).toBe(0);
+    expect(summary.retried).toBe(1);
+    expect(reversalEvent?.delivery_state).toBe('queued');
+    expect(reversalEvent?.attempt_count).toBe(1);
+    expect(reversalEvent?.next_retry_at).not.toBeNull();
+  });
+
+  it('omits provider response bodies from permanent queued-sale reversal resolution logs', async () => {
+    const { user } = await createDeliveredSaleEvent({ saleResponse: 'queued' });
+    const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
+      await import('@/lib/impact/affiliate-events');
+
+    await enqueueImpactSaleReversalForCharge({
+      stripeChargeId: 'ch_sale_test_123',
+      disputeId: 'dp_resolution_fail',
+      amount: 29,
+      currency: 'usd',
+      eventDate: new Date('2026-04-10T10:00:00.000Z'),
+    });
+
+    const sensitiveProviderBody = 'ClickId=queued-sale-click buyer@example.com auth=secret';
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        new Response(sensitiveProviderBody, { status: 400 })
+      ) as jest.MockedFunction<typeof fetch>;
+
+    const summary = await dispatchQueuedAffiliateEvents();
+    const reversalEvent = (await getUserAffiliateEvents(user.id)).find(
+      row => row.event_type === 'sale_reversal'
+    );
+
     expect(summary.failed).toBe(1);
-    expect(summary.retried).toBe(0);
     expect(reversalEvent?.delivery_state).toBe('failed');
     expect(reversalEvent?.attempt_count).toBe(1);
-    expect(reversalEvent?.next_retry_at).toBeNull();
+    expect(mockErrorLogger).toHaveBeenCalledWith(
+      'Affiliate event delivery failed permanently',
+      expect.objectContaining({
+        failure_kind: 'submission_failed',
+        status_code: 400,
+        error: undefined,
+      })
+    );
+    expect(JSON.stringify(mockErrorLogger.mock.calls)).not.toContain(sensitiveProviderBody);
   });
 
   it('retries sale reversal on retryable upstream failure', async () => {
     const { user } = await createDeliveredSaleEvent({ saleResponse: 'immediate' });
     const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -715,7 +960,7 @@ describe('affiliate-events', () => {
   it('fails sale reversal permanently on client failure', async () => {
     const { user } = await createDeliveredSaleEvent({ saleResponse: 'immediate' });
     const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -725,11 +970,12 @@ describe('affiliate-events', () => {
       eventDate: new Date('2026-04-10T10:00:00.000Z'),
     });
 
+    const sensitiveProviderBody = 'ClickId=reversal-click buyer@example.com auth=secret';
     global.fetch = jest
       .fn()
-      .mockResolvedValue(new Response('bad request', { status: 400 })) as jest.MockedFunction<
-      typeof fetch
-    >;
+      .mockResolvedValue(
+        new Response(sensitiveProviderBody, { status: 400 })
+      ) as jest.MockedFunction<typeof fetch>;
 
     const summary = await dispatchQueuedAffiliateEvents();
     const reversalEvent = (await getUserAffiliateEvents(user.id)).find(
@@ -739,12 +985,21 @@ describe('affiliate-events', () => {
     expect(summary.failed).toBe(1);
     expect(reversalEvent?.delivery_state).toBe('failed');
     expect(reversalEvent?.attempt_count).toBe(1);
+    expect(mockErrorLogger).toHaveBeenCalledWith(
+      'Affiliate event delivery failed permanently',
+      expect.objectContaining({
+        failure_kind: 'http_4xx',
+        status_code: 400,
+        error: undefined,
+      })
+    );
+    expect(JSON.stringify(mockErrorLogger.mock.calls)).not.toContain(sensitiveProviderBody);
   });
 
   it('fails blocked sale reversal when parent sale fails permanently', async () => {
     const { user, saleEvent } = await createQueuedSaleEvent();
     const { dispatchQueuedAffiliateEvents, enqueueImpactSaleReversalForCharge } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -773,7 +1028,7 @@ describe('affiliate-events', () => {
 
   it('dedupes duplicate disputes for same stripe charge', async () => {
     const { user } = await createDeliveredSaleEvent({ saleResponse: 'immediate' });
-    const { enqueueImpactSaleReversalForCharge } = await import('@/lib/affiliate-events');
+    const { enqueueImpactSaleReversalForCharge } = await import('@/lib/impact/affiliate-events');
 
     await enqueueImpactSaleReversalForCharge({
       stripeChargeId: 'ch_sale_test_123',
@@ -800,7 +1055,7 @@ describe('affiliate-events', () => {
 
   it('persists dispute when sale row is missing and materializes reversal once sale appears', async () => {
     const { enqueueImpactSaleReversalForCharge, dispatchQueuedAffiliateEvents } =
-      await import('@/lib/affiliate-events');
+      await import('@/lib/impact/affiliate-events');
 
     // Dispute arrives before invoice.paid has recorded the sale row.
     const deferredResult = await enqueueImpactSaleReversalForCharge({

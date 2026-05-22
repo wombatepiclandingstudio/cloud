@@ -2,7 +2,7 @@ import 'server-only';
 
 import { createHash } from 'crypto';
 import { IMPACT_ACCOUNT_SID, IMPACT_AUTH_TOKEN, IMPACT_CAMPAIGN_ID } from '@/lib/config.server';
-import { logImpactReferralDebug, truncateForLog } from '@/lib/impact-debug';
+import { logImpactReferralDebug, truncateForLog } from '@/lib/impact/debug';
 
 const IMPACT_REVERSAL_DISPOSITION_CODE = 'REJECTED';
 
@@ -642,7 +642,7 @@ export async function resolveImpactSubmissionUri(
   if (result.skipped === 'unconfigured') {
     return {
       ok: false,
-      failureKind: 'submission_failed',
+      failureKind: 'network',
       error: 'Impact is unconfigured; cannot resolve queued submission',
     };
   }
