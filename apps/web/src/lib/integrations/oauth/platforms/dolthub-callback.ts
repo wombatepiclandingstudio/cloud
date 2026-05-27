@@ -2,7 +2,6 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { getUserFromAuth } from '@/lib/user/server';
 import { ensureOrganizationAccess } from '@/routers/organizations/utils';
-import type { Owner } from '@/lib/integrations/core/types';
 import { captureException, captureMessage } from '@sentry/nextjs';
 import {
   exchangeDoltHubOAuthCode,
@@ -10,19 +9,13 @@ import {
 } from '@/lib/integrations/dolthub-service';
 import { verifyOAuthState } from '@/lib/integrations/oauth-state';
 import { APP_URL } from '@/lib/constants';
-
-function buildDoltHubRedirectPath(state: string | null, queryParam: string): string {
-  const verified = state ? verifyOAuthState(state) : null;
-  const owner = verified?.owner;
-
-  if (owner?.startsWith('org_')) {
-    return `/organizations/${owner.replace('org_', '')}/integrations/dolthub?${queryParam}`;
-  }
-  if (owner?.startsWith('user_')) {
-    return `/integrations/dolthub?${queryParam}`;
-  }
-  return `/integrations?${queryParam}`;
-}
+import { PLATFORM } from '@/lib/integrations/core/constants';
+import {
+  appendIntegrationOAuthRedirectQuery,
+  buildIntegrationOAuthRedirectPath,
+  buildIntegrationOAuthRedirectPathFromState,
+  parseOAuthStateOwner,
+} from '@/lib/integrations/oauth/common';
 
 /**
  * DoltHub OAuth Callback
@@ -30,7 +23,7 @@ function buildDoltHubRedirectPath(state: string | null, queryParam: string): str
  * Called when user completes the DoltHub OAuth flow.
  * Exchanges the authorization code for tokens and stores the integration.
  */
-export async function GET(request: NextRequest) {
+export async function handleDoltHubOAuthCallback(request: NextRequest) {
   try {
     const { user, authFailedResponse } = await getUserFromAuth({ adminOnly: false });
     if (authFailedResponse) {
@@ -50,7 +43,14 @@ export async function GET(request: NextRequest) {
       });
 
       return NextResponse.redirect(
-        new URL(buildDoltHubRedirectPath(state, `error=${encodeURIComponent(error)}`), APP_URL)
+        new URL(
+          buildIntegrationOAuthRedirectPathFromState(
+            PLATFORM.DOLTHUB,
+            state,
+            `error=${encodeURIComponent(error)}`
+          ),
+          APP_URL
+        )
       );
     }
 
@@ -69,7 +69,10 @@ export async function GET(request: NextRequest) {
       });
 
       return NextResponse.redirect(
-        new URL(buildDoltHubRedirectPath(state, 'error=missing_code'), APP_URL)
+        new URL(
+          buildIntegrationOAuthRedirectPathFromState(PLATFORM.DOLTHUB, state, 'error=missing_code'),
+          APP_URL
+        )
       );
     }
 
@@ -92,16 +95,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL('/integrations?error=unauthorized', APP_URL));
     }
 
-    let owner: Owner;
     const ownerStr = verified.owner;
-
-    if (ownerStr.startsWith('org_')) {
-      const ownerId = ownerStr.replace('org_', '');
-      owner = { type: 'org', id: ownerId };
-    } else if (ownerStr.startsWith('user_')) {
-      const ownerId = ownerStr.replace('user_', '');
-      owner = { type: 'user', id: ownerId };
-    } else {
+    const owner = parseOAuthStateOwner(ownerStr);
+    if (!owner) {
       captureMessage('DoltHub callback missing or invalid owner in state', {
         level: 'warning',
         tags: { endpoint: 'dolthub/callback', source: 'dolthub_oauth' },
@@ -123,10 +119,9 @@ export async function GET(request: NextRequest) {
       tokens,
     });
 
-    const successPath =
-      owner.type === 'org'
-        ? `/organizations/${owner.id}/integrations/dolthub?success=installed`
-        : `/integrations/dolthub?success=installed`;
+    const successPath = verified.returnTo
+      ? appendIntegrationOAuthRedirectQuery(verified.returnTo, 'success=installed')
+      : buildIntegrationOAuthRedirectPath(PLATFORM.DOLTHUB, owner, 'success=installed');
 
     return NextResponse.redirect(new URL(successPath, APP_URL));
   } catch (error) {
@@ -147,7 +142,14 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.redirect(
-      new URL(buildDoltHubRedirectPath(state, 'error=installation_failed'), APP_URL)
+      new URL(
+        buildIntegrationOAuthRedirectPathFromState(
+          PLATFORM.DOLTHUB,
+          state,
+          'error=installation_failed'
+        ),
+        APP_URL
+      )
     );
   }
 }

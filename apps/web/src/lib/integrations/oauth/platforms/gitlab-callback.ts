@@ -23,6 +23,7 @@ import {
   verifyGitLabOAuthState,
 } from '@/lib/integrations/platforms/gitlab/oauth-state';
 import { getGitLabOAuthCredentials } from '@/lib/integrations/platforms/gitlab/oauth-credentials';
+import { appendIntegrationOAuthRedirectQuery } from '@/lib/integrations/oauth/common';
 
 /**
  * Generates a secure random webhook secret for GitLab webhook verification
@@ -36,7 +37,7 @@ function buildGitLabRedirectPath(
   queryParams: string
 ): string {
   if (state?.returnTo) {
-    return `${state.returnTo}${state.returnTo.includes('?') ? '&' : '?'}${queryParams}`;
+    return appendIntegrationOAuthRedirectQuery(state.returnTo, queryParams);
   }
 
   if (state?.owner.type === 'org') {
@@ -73,7 +74,7 @@ function gitLabOAuthSentryContext(searchParams: URLSearchParams): {
  * Called when user completes the GitLab OAuth authorization flow.
  * Exchanges the authorization code for tokens and stores the integration.
  */
-export async function GET(request: NextRequest) {
+export async function handleGitLabOAuthCallback(request: NextRequest) {
   try {
     const { user, authFailedResponse } = await getUserFromAuth({ adminOnly: false });
     if (authFailedResponse) {
@@ -245,7 +246,7 @@ export async function GET(request: NextRequest) {
     }
 
     const successPath = verifiedState.returnTo
-      ? `${verifiedState.returnTo}${verifiedState.returnTo.includes('?') ? '&' : '?'}success=gitlab_connected`
+      ? appendIntegrationOAuthRedirectQuery(verifiedState.returnTo, 'success=gitlab_connected')
       : owner.type === 'org'
         ? `/organizations/${owner.id}/integrations/gitlab?success=connected`
         : `/integrations/gitlab?success=connected`;
