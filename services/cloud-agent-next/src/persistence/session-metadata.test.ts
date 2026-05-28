@@ -295,6 +295,27 @@ describe('session metadata boundary', () => {
     });
   });
 
+  it('parses review-origin GitLab metadata using generic repository context', () => {
+    const current = {
+      metadataSchemaVersion: 2 as const,
+      identity: {
+        sessionId: 'agent_gitlab_review',
+        userId: 'user_123',
+        createdOnPlatform: 'code-review',
+      },
+      auth: {},
+      repository: {
+        type: 'gitlab' as const,
+        url: 'https://gitlab.com/acme/repo.git',
+        platform: 'gitlab' as const,
+      },
+      lifecycle: { version: 1, timestamp: 1 },
+    };
+
+    expect(parseSessionMetadata(current)).toEqual(current);
+    expect(serializeSessionMetadata(current)).toEqual(current);
+  });
+
   it('preserves legacy generic git tokens in grouped repository metadata', () => {
     const metadata = parseSessionMetadata({
       version: 1,
