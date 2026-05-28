@@ -826,6 +826,7 @@ export const GatewayApiKindSchema = z.enum([
   'chat_completions',
   'embeddings',
   'fim_completions',
+  'edit_completions',
   'messages',
   'responses',
   'audio_transcriptions',
