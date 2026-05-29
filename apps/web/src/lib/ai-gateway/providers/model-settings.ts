@@ -11,6 +11,7 @@ import type {
   OpenCodePrompt,
   OpenCodeSettings,
 } from '@kilocode/db/schema-types';
+import { isStepModel } from '@/lib/ai-gateway/providers/stepfun';
 import { ReasoningEffortSchema } from '@kilocode/db/schema-types';
 
 export const REASONING_VARIANTS_BINARY = {
@@ -93,6 +94,9 @@ export function getModelVariants(model: string): OpenCodeSettings['variants'] {
       medium: { reasoning: { enabled: true, effort: 'medium' } },
       high: { reasoning: { enabled: true, effort: 'high' } },
     };
+  }
+  if (isStepModel(model)) {
+    return REASONING_VARIANTS_LOW_MEDIUM_HIGH;
   }
   return undefined;
 }
