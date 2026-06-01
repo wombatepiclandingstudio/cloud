@@ -1,6 +1,7 @@
 import type { GatewayRequest } from '@/lib/ai-gateway/providers/openrouter/types';
 import { shouldRouteToVercel } from '@/lib/ai-gateway/providers/vercel';
 import { findKiloExclusiveModel, isKiloExclusiveModel } from '@/lib/ai-gateway/models';
+import { CUSTOM_LLM_PREFIX } from '@/lib/ai-gateway/model-utils';
 import {
   getBYOKforOrganization,
   getBYOKforUser,
@@ -183,8 +184,8 @@ export async function getProvider(input: GetProviderInput): Promise<GetProviderR
   const kiloExclusiveModel = findKiloExclusiveModel(requestedModel);
 
   // Model experiment routing for dedicated preview public ids. Runs before
-  // `kilo-internal/...` and the `kiloExclusiveModels` lookup so an
-  // experimented public id never falls through to OpenRouter/Vercel.
+  // the custom-LLM (`kilo-internal/...`) and the `kiloExclusiveModels` lookup
+  // so an experimented public id never falls through to OpenRouter/Vercel.
   const experimented = await isPublicIdExperimented(requestedModel);
   if (experimented === true) {
     if (kiloExclusiveModel) {
@@ -223,7 +224,7 @@ export async function getProvider(input: GetProviderInput): Promise<GetProviderR
     // this id. Fall through to non-experiment routing.
   }
 
-  if (requestedModel.startsWith('kilo-internal/') && organizationId) {
+  if (requestedModel.startsWith(CUSTOM_LLM_PREFIX) && organizationId) {
     const customLlmResult = await checkCustomLlm(requestedModel, organizationId);
     if (customLlmResult) {
       return customLlmResult;
