@@ -430,8 +430,7 @@ export async function POST(request: NextRequest): Promise<NextResponseType<unkno
   if (!effectiveProviderContext.provider.supportedChatApis.includes(requestBodyParsed.kind)) {
     return apiKindNotSupportedResponse(
       requestBodyParsed.kind,
-      effectiveProviderContext.provider.supportedChatApis,
-      fraudHeaders
+      effectiveProviderContext.provider.supportedChatApis
     );
   }
 
@@ -565,8 +564,7 @@ export async function POST(request: NextRequest): Promise<NextResponseType<unkno
       }
       return apiKindNotSupportedResponse(
         requestBodyParsed.kind,
-        effectiveProviderContext.provider.supportedChatApis,
-        fraudHeaders
+        effectiveProviderContext.provider.supportedChatApis
       );
     }
   }
