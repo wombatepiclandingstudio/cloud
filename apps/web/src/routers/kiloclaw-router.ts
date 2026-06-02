@@ -92,6 +92,8 @@ import {
   enqueueAffiliateEventForUser,
 } from '@/lib/impact/affiliate-events';
 import { clawAccessProcedure } from '@/lib/kiloclaw/access-gate';
+import { dispatchInstallFromSource } from '@/lib/kiloclaw/install-dispatch';
+import { INSTALL_SOURCE_KEYS } from '@/lib/kiloclaw/install-sources';
 import { cancelCliRun, createCliRun, getCliRunStatus } from '@/lib/kiloclaw/cli-runs';
 import { KILOCLAW_EARLYBIRD_EXPIRY_DATE } from '@/lib/kiloclaw/constants';
 import {
@@ -3021,6 +3023,25 @@ export const kiloclawRouter = createTRPCRouter({
     const instance = await getActiveInstance(ctx.user.id);
     return instance ? { instanceId: instance.id } : null;
   }),
+
+  installFromSource: clawAccessProcedure
+    .input(
+      z.object({
+        source: z.enum(INSTALL_SOURCE_KEYS),
+        slug: z.string().min(1).max(200),
+        // Signature of the payload the user reviewed; the dispatch re-verifies
+        // and requires the re-fetched payload to still match this.
+        signature: z.string().min(1).max(200),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      return await dispatchInstallFromSource({
+        userId: ctx.user.id,
+        source: input.source,
+        slug: input.slug,
+        expectedSignature: input.signature,
+      });
+    }),
 
   getMorningBriefingStatus: clawAccessProcedure.query(async ({ ctx }) => {
     const instance = await getActiveInstance(ctx.user.id);
