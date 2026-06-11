@@ -31,7 +31,6 @@ import {
   type OpenRouterModelsResponse,
 } from '@/lib/organizations/organization-types';
 import { cn } from '@/lib/utils';
-import { formatBodySizeKilobytes } from './auto-routing-format';
 
 const periods: Array<{ value: AutoRoutingAnalyticsPeriod; label: string }> = [
   { value: '1h', label: '1h' },
@@ -116,6 +115,22 @@ function formatCredits(value: number) {
     minimumFractionDigits: value > 0 && value < 1 ? 4 : 2,
     maximumFractionDigits: value > 0 && value < 1 ? 4 : 2,
   }).format(value);
+}
+
+// Cache hits and fallbacks are both subsets of requests that produced a
+// classification, so their rates use classifiedRequests (not totalRequests)
+// as the denominator.
+export function summaryRates(
+  summary: AutoRoutingClassifierAnalyticsResponse['summary'] | undefined
+) {
+  const totalRequests = summary?.totalRequests ?? 0;
+  const classifiedRequests = summary?.classifiedRequests ?? 0;
+  return {
+    classifiedRate: totalRequests > 0 ? classifiedRequests / totalRequests : 0,
+    cacheHitRate: classifiedRequests > 0 ? (summary?.cachedRequests ?? 0) / classifiedRequests : 0,
+    fallbackRate:
+      classifiedRequests > 0 ? (summary?.fallbackRequests ?? 0) / classifiedRequests : 0,
+  };
 }
 
 function MetricHelp({ label, description }: { label: string; description: string }) {
@@ -221,7 +236,7 @@ export function AutoRoutingBreakdownTables({
       <div className="grid gap-4 xl:grid-cols-2">
         <BreakdownCard
           title="Status"
-          help="Breakdown by raw classifier status, including classifier_error:<subtype> rows for classifier failures."
+          help="Breakdown by raw classifier status: fallback:<reason> rows for heuristic fallback classifications and classifier_error:<subtype> rows for classifier failures."
           loading={loading}
         >
           <Table>
@@ -423,11 +438,7 @@ export function AutoRoutingAdminContent() {
     hasClassifierModelLoaded && selectedModel.trim().length > 0 && selectedModel !== currentModel;
   const summary = analyticsQuery.data?.summary;
   const totalRequests = summary?.totalRequests ?? 0;
-  const classifiedRate = totalRequests > 0 ? (summary?.classifiedRequests ?? 0) / totalRequests : 0;
-  const sessionRate = totalRequests > 0 ? (summary?.withSessionId ?? 0) / totalRequests : 0;
-  const classifiedRequests = summary?.classifiedRequests ?? 0;
-  const cacheHitRate =
-    classifiedRequests > 0 ? (summary?.cachedRequests ?? 0) / classifiedRequests : 0;
+  const { classifiedRate, cacheHitRate, fallbackRate } = summaryRates(summary);
   const analyticsErrorMessage =
     analyticsQuery.error instanceof Error
       ? analyticsQuery.error.message
@@ -532,7 +543,7 @@ export function AutoRoutingAdminContent() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <MetricCard
               title="Requests"
               value={formatNumber(totalRequests)}
@@ -540,6 +551,14 @@ export function AutoRoutingAdminContent() {
               icon={Route}
               loading={analyticsQuery.isLoading}
               help="Total auto-routing analytics rows in the selected period. Includes classified requests, classifier errors, and invalid input statuses."
+            />
+            <MetricCard
+              title="Cache Hit Rate"
+              value={formatPercent(cacheHitRate)}
+              detail={`${formatNumber(summary?.cachedRequests ?? 0)} served from cache`}
+              icon={BarChart3}
+              loading={analyticsQuery.isLoading}
+              help="Percent of classified requests served from the per-conversation decision cache instead of a classifier model call. Cached decisions cost no credits."
             />
             <MetricCard
               title="Classifier Latency"
@@ -558,23 +577,12 @@ export function AutoRoutingAdminContent() {
               help="Summed OpenRouter classifier cost in OpenRouter credits, not USD."
             />
             <MetricCard
-              title="Session Coverage"
-              value={formatPercent(sessionRate)}
-              detail={`${formatNumber(summary?.uniqueSessions ?? 0)} unique sessions`}
-              icon={BarChart3}
+              title="Fallback Rate"
+              value={formatPercent(fallbackRate)}
+              detail={`${formatNumber(summary?.fallbackRequests ?? 0)} heuristic fallbacks`}
+              icon={Route}
               loading={analyticsQuery.isLoading}
-              help="Percent of analytics rows with a session id. The detail shows distinct non-empty sessions."
-            />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard
-              title="Cache Hit Rate"
-              value={formatPercent(cacheHitRate)}
-              detail={`${formatNumber(summary?.cachedRequests ?? 0)} served from cache`}
-              icon={Clock3}
-              loading={analyticsQuery.isLoading}
-              help="Percent of classified requests served from the per-conversation decision cache instead of a classifier model call. Cached decisions cost no credits."
+              help="Percent of classified requests that used the heuristic fallback classification because the classifier model call failed or returned invalid output. The Status table breaks fallbacks down by reason."
             />
             <MetricCard
               title="Classifier Errors"
@@ -582,23 +590,7 @@ export function AutoRoutingAdminContent() {
               detail={`${formatNumber(summary?.invalidRequests ?? 0)} invalid inputs`}
               icon={BarChart3}
               loading={analyticsQuery.isLoading}
-              help="Requests where the mirrored input was parseable, but classifier execution or classifier output failed. The detail counts malformed JSON, envelope, or body inputs."
-            />
-            <MetricCard
-              title="Requires Tools"
-              value={formatNumber(summary?.requiresTools ?? 0)}
-              detail={`${formatNumber(summary?.mirroredHasTools ?? 0)} mirrored with tools`}
-              icon={Route}
-              loading={analyticsQuery.isLoading}
-              help="Classified requests where the classifier output says the task requires tools. The detail counts original mirrored requests that included tools."
-            />
-            <MetricCard
-              title="Body Size"
-              value={formatBodySizeKilobytes(summary?.avgBodyBytes ?? 0)}
-              detail={`${formatPercent(summary?.avgConfidence ?? 0)} avg confidence`}
-              icon={BarChart3}
-              loading={analyticsQuery.isLoading}
-              help="Average mirrored body size in KB. The detail shows average classifier confidence for successful classifications."
+              help="Requests where classifier execution or classifier output failed. The detail counts mirror payloads the worker rejected (malformed JSON or schema mismatch), which usually indicates gateway/worker version skew during a deploy."
             />
           </div>
 
