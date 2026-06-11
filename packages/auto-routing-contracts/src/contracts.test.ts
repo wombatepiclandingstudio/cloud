@@ -9,24 +9,42 @@ import {
 
 describe('auto routing contracts', () => {
   it('validates the cross-service request and response contracts', () => {
-    expect(
-      MirrorPayloadSchema.parse({
-        path: '/chat/completions',
-        receivedAt: '2026-06-10T12:00:00.000Z',
-        sessionId: 'session-123',
-        headers: { 'content-type': 'application/json' },
-        body: '{"model":"auto","messages":[]}',
-      })
-    ).toMatchObject({ sessionId: 'session-123' });
+    const normalizedInput = {
+      apiKind: 'chat_completions',
+      requestedModel: 'kilo-auto/free',
+      systemPromptPrefix: 'You are Kilo Code.',
+      userPromptPrefix: 'Add parser tests.',
+      latestUserPromptPrefix: null,
+      messageCount: 2,
+      hasTools: false,
+      stream: true,
+      providerHints: { provider: null, providerOptions: null },
+    };
 
+    const mirrorPayload = {
+      input: normalizedInput,
+      userId: 'user-1',
+      sessionId: 'session-123',
+      machineId: 'machine-1',
+      clientRequestId: 'req-1',
+      mode: 'code',
+      userAgent: 'Kilo-Code/4.106.0',
+      bodyBytes: 1234,
+    };
+
+    expect(MirrorPayloadSchema.parse(mirrorPayload)).toMatchObject({
+      sessionId: 'session-123',
+      userId: 'user-1',
+    });
+
+    // One broken constraint per case: identity fields are null-or-nonempty,
+    // never empty strings.
+    expect(() => MirrorPayloadSchema.parse({ ...mirrorPayload, userId: '' })).toThrow();
+    expect(() => MirrorPayloadSchema.parse({ ...mirrorPayload, sessionId: '' })).toThrow();
+    expect(() => MirrorPayloadSchema.parse({ ...mirrorPayload, mode: '   ' })).toThrow();
+    expect(() => MirrorPayloadSchema.parse({ ...mirrorPayload, bodyBytes: -1 })).toThrow();
     expect(() =>
-      MirrorPayloadSchema.parse({
-        path: '/chat/completions',
-        receivedAt: 'not-a-timestamp',
-        sessionId: 'session-123',
-        headers: { 'content-type': 'application/json' },
-        body: '{"model":"auto","messages":[]}',
-      })
+      MirrorPayloadSchema.parse({ ...mirrorPayload, input: { apiKind: 'chat_completions' } })
     ).toThrow();
 
     expect(

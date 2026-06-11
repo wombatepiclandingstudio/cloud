@@ -1,4 +1,4 @@
-import type { NormalizedClassifierInput } from './classifier-input';
+import type { NormalizedClassifierInput } from '@kilocode/auto-routing-contracts';
 
 // Identity scheme for the decision cache: which conversation a mirrored
 // request belongs to, and which exact classifier input it carries. Owning
@@ -15,11 +15,43 @@ export type ContentHashes = {
   loose: string;
 };
 
-// Stable conversation identity even when the client sends no session id:
-// the first user prompt and system prompt do not change within a
-// conversation, so their fingerprint identifies it.
-export function deriveConversationKey(sessionId: string | null, hashes: ContentHashes): string {
-  return sessionId ?? `content:${hashes.loose}`;
+export type ConversationIdentity = {
+  userId: string;
+  sessionId: string | null;
+  machineId: string | null;
+};
+
+// Conversation identity, always scoped by the authenticated user so
+// distinct callers never share a cache object even when they send equal
+// session ids or prompts. Within a user, the session id wins; without one
+// the machine id gives a stable per-device identity, and as a last resort
+// the prompt-prefix fingerprint groups requests of the same conversation.
+export function deriveConversationKey(
+  identity: ConversationIdentity,
+  hashes: ContentHashes
+): string {
+  const conversationScope = identity.sessionId
+    ? `task:${identity.sessionId}`
+    : identity.machineId
+      ? `machine:${identity.machineId}`
+      : `content:${hashes.loose}`;
+  return `user:${identity.userId}:${conversationScope}`;
+}
+
+// The conversation key embeds the raw user id (and the client IP for
+// anonymous users), which must not leave our infrastructure. Outbound
+// session affinity (OpenRouter sticky routing) gets a hash with the same
+// per-conversation stability instead.
+export function deriveOutboundSessionId(conversationKey: string): Promise<string> {
+  return sha256Hex16(conversationKey);
+}
+
+// One-way hash for identifiers that appear in telemetry (logs, analytics):
+// preserves correlation across events without persisting the raw id, which
+// for anonymous users embeds the client IP. Raw identity stays confined to
+// cache scoping.
+export function hashIdentifierForTelemetry(value: string): Promise<string> {
+  return sha256Hex16(value);
 }
 
 export async function computeContentHashes(

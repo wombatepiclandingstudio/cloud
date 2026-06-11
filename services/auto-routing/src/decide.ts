@@ -1,12 +1,20 @@
-import type { AutoRoutingDecisionResponse } from '@kilocode/auto-routing-contracts';
+import { MirrorPayloadSchema } from '@kilocode/auto-routing-contracts';
+import type {
+  AutoRoutingDecisionResponse,
+  MirrorPayload,
+  NormalizedClassifierInput,
+} from '@kilocode/auto-routing-contracts';
 import { formatError } from '@kilocode/worker-utils';
 import type { Handler } from 'hono';
 import { writeClassifierMetricsDataPoint } from './classifier-analytics';
 import { getClassifierModel, getDecisionLogSampleRate } from './classifier-config';
-import { mirrorPayloadSchema, parseClassifierInput } from './classifier-input';
-import type { NormalizedClassifierInput } from './classifier-input';
 import type { ClassifierOutput } from './classifier-output';
-import { computeContentHashes, deriveConversationKey } from './conversation-identity';
+import {
+  computeContentHashes,
+  deriveConversationKey,
+  deriveOutboundSessionId,
+  hashIdentifierForTelemetry,
+} from './conversation-identity';
 import type { ContentHashes } from './conversation-identity';
 import { getCachedClassification, putCachedClassification } from './decision-cache';
 import { ClassifierRunError, classifyNormalizedInput } from './model-classifier';
@@ -16,8 +24,6 @@ import type { HonoEnv } from './hono-env';
 // Isolate-scoped request counter, used to correlate latency with isolate
 // warm-up in logs.
 let isolateRequestSeq = 0;
-
-const textEncoder = new TextEncoder();
 
 function decisionResponse(
   cost: number,
@@ -76,16 +82,16 @@ function classifierErrorStatus(error: unknown): `classifier_error:${string}` {
 }
 
 // Per-request fields shared by every metrics write and log line for the
-// decision, assembled once after the mirrored payload is parsed.
+// decision: the validated payload plus everything derived from it once.
 type DecisionContext = {
-  classifierInput: NormalizedClassifierInput;
-  sessionId: string | null;
-  headers: Record<string, string>;
+  payload: MirrorPayload;
   hashes: ContentHashes;
   conversationKey: string;
+  // One-way hash of the user id: anonymous ids embed the client IP, so logs
+  // get a stable correlator instead of the raw value.
+  userIdHash: string;
   reqSeq: number;
   colo: string | null;
-  bodyBytes: number;
   successSampleRate: number;
 };
 
@@ -194,12 +200,12 @@ function recordDecision(
   writeClassifierMetricsDataPoint(env, {
     status: outcome.kind === 'error' ? classifierErrorStatus(outcome.error) : 'classified',
     classifierModel: summary.classifierModel,
-    sessionId: ctx.sessionId,
-    input: ctx.classifierInput,
+    sessionId: ctx.payload.sessionId,
+    input: ctx.payload.input,
     classification: summary.classification,
     classifierCostCredits: summary.cost,
     classifierDurationMs: durationMs,
-    bodyBytes: ctx.bodyBytes,
+    bodyBytes: ctx.payload.bodyBytes,
     cacheHit: summary.cacheHit,
   });
 
@@ -218,24 +224,26 @@ function recordDecision(
       cacheHit: summary.cacheHit,
       retried: summary.retried,
       classifierModel: summary.classifierModel,
-      requestedModel: ctx.classifierInput.requestedModel,
-      apiKind: ctx.classifierInput.apiKind,
-      sessionId: ctx.sessionId,
+      requestedModel: ctx.payload.input.requestedModel,
+      apiKind: ctx.payload.input.apiKind,
+      sessionId: ctx.payload.sessionId,
       hashExact: ctx.hashes.exact,
       hashLoose: ctx.hashes.loose,
       reqSeq: ctx.reqSeq,
       colo: ctx.colo,
       classifierDurationMs: Math.round(durationMs),
       classifierCostCredits: summary.cost,
-      messageCount: ctx.classifierInput.messageCount,
-      bodyBytes: ctx.bodyBytes,
+      messageCount: ctx.payload.input.messageCount,
+      bodyBytes: ctx.payload.bodyBytes,
       taskType: summary.classification?.taskType ?? null,
       subtaskType: summary.classification?.subtaskType ?? null,
       confidence: summary.classification?.confidence ?? null,
-      hasMachineId: 'x-kilocode-machineid' in ctx.headers,
-      hasClientRequestId: 'x-kilo-request' in ctx.headers,
-      mode: ctx.headers['x-kilocode-mode'] ?? null,
-      uaPrefix: ctx.headers['user-agent']?.slice(0, 40) ?? null,
+      userIdHash: ctx.userIdHash,
+      isAnonymousUser: ctx.payload.userId.startsWith('anon:'),
+      clientRequestId: ctx.payload.clientRequestId,
+      hasMachineId: ctx.payload.machineId !== null,
+      mode: ctx.payload.mode,
+      uaPrefix: ctx.payload.userAgent?.slice(0, 40) ?? null,
       ...summary.details,
     })
   );
@@ -250,38 +258,27 @@ export const decideHandler: Handler<HonoEnv> = async c => {
     return c.json({ error: 'Invalid JSON body' }, 400);
   }
 
-  const parsed = mirrorPayloadSchema.safeParse(rawBody);
+  const parsed = MirrorPayloadSchema.safeParse(rawBody);
   if (!parsed.success) {
     writeClassifierMetricsDataPoint(c.env, { status: 'invalid_envelope' });
     return c.json({ error: 'Invalid classifier payload' }, 400);
   }
 
-  const bodyBytes = textEncoder.encode(parsed.data.body).byteLength;
-  const classifierInput = parseClassifierInput(parsed.data);
-  if (!classifierInput.success) {
-    writeClassifierMetricsDataPoint(c.env, {
-      status: 'invalid_body',
-      sessionId: parsed.data.sessionId,
-      bodyBytes,
-    });
-    return c.json(emptyDecisionResponse());
-  }
-
+  const payload = parsed.data;
   const startedAt = performance.now();
-  const [hashes, classifierModel, successSampleRate] = await Promise.all([
-    computeContentHashes(classifierInput.data),
+  const [hashes, userIdHash, classifierModel, successSampleRate] = await Promise.all([
+    computeContentHashes(payload.input),
+    hashIdentifierForTelemetry(payload.userId),
     getClassifierModel(c.env),
     getDecisionLogSampleRate(c.env),
   ]);
   const ctx: DecisionContext = {
-    classifierInput: classifierInput.data,
-    sessionId: parsed.data.sessionId,
-    headers: parsed.data.headers,
+    payload,
     hashes,
-    conversationKey: deriveConversationKey(parsed.data.sessionId, hashes),
+    conversationKey: deriveConversationKey(payload, hashes),
+    userIdHash,
     reqSeq: isolateRequestSeq++,
     colo: (c.req.raw.cf?.colo as string | undefined) ?? null,
-    bodyBytes,
     successSampleRate,
   };
 
@@ -297,12 +294,12 @@ export const decideHandler: Handler<HonoEnv> = async c => {
       classifierModel,
       classification: cached,
     });
-    return c.json(decisionResponse(0, cached, classifierInput.data));
+    return c.json(decisionResponse(0, cached, payload.input));
   }
 
   try {
-    const classifier = await classifyNormalizedInput(c.env, classifierInput.data, classifierModel, {
-      openrouterSessionId: ctx.conversationKey,
+    const classifier = await classifyNormalizedInput(c.env, payload.input, classifierModel, {
+      openrouterSessionId: await deriveOutboundSessionId(ctx.conversationKey),
     });
     if (!classifier.fallback) {
       c.executionCtx.waitUntil(
@@ -318,9 +315,7 @@ export const decideHandler: Handler<HonoEnv> = async c => {
     recordDecision(c.env, ctx, performance.now() - startedAt, { kind: 'model', classifier });
     // When routing decisions are implemented, include the prior decision for
     // this session as an input alongside classifier output.
-    return c.json(
-      decisionResponse(classifier.cost ?? 0, classifier.classification, classifierInput.data)
-    );
+    return c.json(decisionResponse(classifier.cost ?? 0, classifier.classification, payload.input));
   } catch (error) {
     recordDecision(c.env, ctx, performance.now() - startedAt, { kind: 'error', error });
     // A failed run can still have billed the first attempt (e.g. a valid-but-

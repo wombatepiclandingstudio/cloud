@@ -1,51 +1,32 @@
 import * as z from 'zod';
+import { NormalizedClassifierInputSchema } from './input';
 
-export const MirrorPathSchema = z.enum(['/chat/completions', '/responses', '/messages']);
-export type MirrorPath = z.infer<typeof MirrorPathSchema>;
+export {
+  NormalizedClassifierInputSchema,
+  type JsonValue,
+  type NormalizedClassifierInput,
+} from './input';
 
+// What the gateway mirrors to the auto-routing worker per request: the
+// already-normalized classifier input plus caller identity. The gateway
+// normalizes before sending so the multi-hundred-KB request body never
+// leaves it, and skips the mirror entirely when normalization fails.
 export const MirrorPayloadSchema = z.object({
-  path: MirrorPathSchema,
-  receivedAt: z.string().datetime(),
+  input: NormalizedClassifierInputSchema,
+  // Authenticated user id, or the gateway's synthetic anonymous id
+  // ('anon:<ip>'). Scopes the worker's conversation identity.
+  userId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1).nullable(),
-  headers: z.record(z.string(), z.string()),
-  body: z.string(),
+  machineId: z.string().trim().min(1).nullable(),
+  // Per-message id from the kilocode client, joinable to PostHog feedback.
+  clientRequestId: z.string().trim().min(1).nullable(),
+  mode: z.string().trim().min(1).nullable(),
+  userAgent: z.string().nullable(),
+  // Size of the original request body, kept as an analytics dimension now
+  // that the body itself is no longer mirrored.
+  bodyBytes: z.number().int().nonnegative(),
 });
 export type MirrorPayload = z.infer<typeof MirrorPayloadSchema>;
-
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: JsonValue }
-  | JsonValue[];
-
-const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(JsonValueSchema),
-    z.record(z.string(), JsonValueSchema),
-  ])
-);
-
-export const NormalizedClassifierInputSchema = z.object({
-  apiKind: z.enum(['chat_completions', 'responses', 'messages']),
-  requestedModel: z.string(),
-  systemPromptPrefix: z.string().nullable(),
-  userPromptPrefix: z.string().nullable(),
-  latestUserPromptPrefix: z.string().nullable().optional(),
-  messageCount: z.number().int().nonnegative().nullable(),
-  hasTools: z.boolean(),
-  stream: z.boolean(),
-  providerHints: z.object({
-    provider: JsonValueSchema,
-    providerOptions: JsonValueSchema,
-  }),
-});
-export type NormalizedClassifierInput = z.infer<typeof NormalizedClassifierInputSchema>;
 
 export const ClassifierTaskTypeSchema = z.enum([
   'implementation',
@@ -180,3 +161,5 @@ export const AutoRoutingClassifierAnalyticsResponseSchema = z.object({
 export type AutoRoutingClassifierAnalyticsResponse = z.infer<
   typeof AutoRoutingClassifierAnalyticsResponseSchema
 >;
+
+export { normalizeClassifierInput, redactProviderHints, type ClassifierApiKind } from './normalize';
