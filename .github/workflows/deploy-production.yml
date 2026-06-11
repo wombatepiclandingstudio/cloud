@@ -22,7 +22,8 @@ jobs:
     environment: production
 
     env:
-      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID_APP }}
+      DATABASE_CA: ${{ secrets.DATABASE_CA }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
 
     steps:
       - name: Checkout code
@@ -41,11 +42,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Install Vercel CLI
-        run: npm install -g vercel@${{ env.VERCEL_VERSION }}
-
-      - run: vercel env pull .env.local --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Check production DB startup path
         run: NODE_ENV=production pnpm exec tsx scripts/check-production-db-startup.ts
@@ -56,7 +52,8 @@ jobs:
     environment: production
 
     env:
-      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID_APP }}
+      DATABASE_CA: ${{ secrets.DATABASE_CA }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
 
     steps:
       - name: Checkout code
@@ -75,11 +72,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Install Vercel CLI
-        run: npm install -g vercel@${{ env.VERCEL_VERSION }}
-
-      - run: vercel env pull .env.local --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Run Drizzle migrations
         run: NODE_ENV=production pnpm run drizzle migrate
