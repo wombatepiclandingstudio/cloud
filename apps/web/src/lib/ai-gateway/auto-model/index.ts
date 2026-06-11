@@ -6,7 +6,7 @@ import {
 } from '@/lib/ai-gateway/providers/anthropic.constants';
 import type { OpenRouterReasoningConfig } from '@/lib/ai-gateway/providers/openrouter/types';
 import type { OpenCodeSettings, Verbosity } from '@kilocode/db/schema-types';
-import { qwen37_plus_model } from '@/lib/ai-gateway/providers/qwen';
+import { QWEN37_PLUS_MODEL_ID } from '@/lib/ai-gateway/custom-pricing';
 import { NVIDIA_TRIAL_TOS } from '@/lib/ai-gateway/providers/nvidia';
 
 type AutoModel = {
@@ -94,7 +94,7 @@ export const BALANCED_CLAW_SETUP_MODEL: ResolvedAutoModel = {
 };
 
 export const BALANCED_QWEN_MODEL: ResolvedAutoModel = {
-  model: qwen37_plus_model.public_id,
+  model: QWEN37_PLUS_MODEL_ID,
   reasoning: { enabled: true },
 };
 
@@ -146,9 +146,7 @@ export const KILO_AUTO_BALANCED_MODEL: AutoModel = {
   input_cache_write_price: '0.00000040625',
   supports_images: true,
   supports_pdf: false,
-  opencode_settings: {
-    ai_sdk_provider: 'alibaba',
-  },
+  opencode_settings: undefined,
 };
 
 export const KILO_AUTO_SMALL_MODEL: AutoModel = {
