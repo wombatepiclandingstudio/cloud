@@ -1,9 +1,12 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   configToFormState,
+  costPerAccuracy,
+  formatCostPerAccuracy,
   formatAccuracy,
   formatUsd,
   formStateToConfig,
+  sortCandidatesByCostPerAccuracy,
 } from './BenchmarksSection';
 
 describe('formatAccuracy', () => {
@@ -55,6 +58,45 @@ describe('formatUsd', () => {
   });
 });
 
+describe('costPerAccuracy', () => {
+  it('divides average cost by accuracy', () => {
+    expect(costPerAccuracy({ avgCostUsd: 0.006, accuracy: 0.75 })).toBeCloseTo(0.008);
+  });
+
+  it('formats the value as USD', () => {
+    expect(formatCostPerAccuracy({ avgCostUsd: 0.006, accuracy: 0.75 })).toBe('$0.008');
+  });
+
+  it('uses an em dash when accuracy is zero', () => {
+    expect(formatCostPerAccuracy({ avgCostUsd: 0.001, accuracy: 0 })).toBe('—');
+  });
+});
+
+describe('sortCandidatesByCostPerAccuracy', () => {
+  it('sorts candidates by lowest cost per accuracy', () => {
+    const sorted = sortCandidatesByCostPerAccuracy([
+      { model: 'higher-cost-per-accuracy', avgCostUsd: 0.006, accuracy: 0.75 },
+      { model: 'zero-accuracy', avgCostUsd: 0, accuracy: 0 },
+      { model: 'best-value', avgCostUsd: 0.004, accuracy: 0.8 },
+    ]);
+
+    expect(sorted.map(candidate => candidate.model)).toEqual([
+      'best-value',
+      'higher-cost-per-accuracy',
+      'zero-accuracy',
+    ]);
+  });
+
+  it('breaks cost-per-accuracy ties by higher accuracy', () => {
+    const sorted = sortCandidatesByCostPerAccuracy([
+      { model: 'less-accurate', avgCostUsd: 0.004, accuracy: 0.5 },
+      { model: 'more-accurate', avgCostUsd: 0.008, accuracy: 1 },
+    ]);
+
+    expect(sorted.map(candidate => candidate.model)).toEqual(['more-accurate', 'less-accurate']);
+  });
+});
+
 describe('configToFormState', () => {
   it('yields defaults including classifierMaxP95LatencyMs "1000" when config is null', () => {
     const state = configToFormState(null);
@@ -64,6 +106,8 @@ describe('configToFormState', () => {
     expect(state.classifierModels).toBe('');
     expect(state.deciderModels).toEqual([]);
     expect(state.maxConcurrency).toBe(100);
+    expect(state.benchmarkUserId).toBe('ce12ef3d-ae95-4d77-b4f0-23735f0a0591');
+    expect(state.benchmarkOrgId).toBe('9d278969-5453-4ae3-a51f-a8d2274a7b56');
   });
 });
 
@@ -75,6 +119,7 @@ describe('formStateToConfig round-trip', () => {
     switchCostFactor: 3,
     maxConcurrency: 4,
     benchmarkUserId: 'user-123',
+    benchmarkOrgId: 'org-123',
     classifierRepetitions: 3,
     deciderRepetitions: 2,
     classifierMaxP95LatencyMs: 500,
@@ -87,11 +132,13 @@ describe('formStateToConfig round-trip', () => {
     expect(state.classifierRepetitions).toBe(3);
     expect(state.deciderRepetitions).toBe(2);
     expect(state.classifierMaxP95LatencyMs).toBe('500');
+    expect(state.benchmarkOrgId).toBe('org-123');
 
     const result = formStateToConfig(state, baseConfig);
     expect(result.classifierRepetitions).toBe(3);
     expect(result.deciderRepetitions).toBe(2);
     expect(result.classifierMaxP95LatencyMs).toBe(500);
+    expect(result.benchmarkOrgId).toBe('org-123');
   });
 
   it('converts empty-string classifierMaxP95LatencyMs form value to null in config', () => {
