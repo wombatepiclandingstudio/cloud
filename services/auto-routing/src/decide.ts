@@ -29,6 +29,7 @@ import { ClassifierRunError, classifyNormalizedInput } from './model-classifier'
 import type { ClassifierRunResult } from './model-classifier';
 import { getRoutingTable } from './routing-table';
 import type { HonoEnv } from './hono-env';
+import { codingPlanDefaultDecision, getCodingPlanPreference } from './coding-plan-preference';
 
 // Isolate-scoped request counter, used to correlate latency with isolate
 // warm-up in logs.
@@ -280,6 +281,21 @@ export const decideHandler: Handler<HonoEnv> = async c => {
 
   const payload = parsed.data;
   const startedAt = performance.now();
+  const deniedModelIds = new Set(payload.routingPolicy?.deniedModelIds ?? []);
+  const codingPlanPreference = await getCodingPlanPreference(c.env, payload.userId);
+  if (codingPlanPreference.active && !deniedModelIds.has(codingPlanPreference.modelId)) {
+    const decision = codingPlanDefaultDecision(codingPlanPreference);
+    writeClassifierMetricsDataPoint(c.env, {
+      status: 'coding_plan_default',
+      classifierModel: 'coding_plan_default',
+      requestedModel: payload.input.requestedModel,
+      classifierDurationMs: performance.now() - startedAt,
+      classifierCostCredits: 0,
+      cacheHit: false,
+    });
+    return c.json({ cost: 0, decision, classifierResult: null });
+  }
+
   const [hashes, userIdHash, classifierModel, successSampleRate, routingTable] = await Promise.all([
     computeContentHashes(payload.input),
     hashIdentifierForTelemetry(payload.userId),
@@ -302,7 +318,6 @@ export const decideHandler: Handler<HonoEnv> = async c => {
     getCachedClassification(c.env, ctx.conversationKey, hashes.exact, classifierModel),
     getStickyDecision(c.env, ctx.conversationKey),
   ]);
-  const deniedModelIds = new Set(payload.routingPolicy?.deniedModelIds ?? []);
   if (cached) {
     const decision = computeDecision(cached, routingTable, stickyModel, deniedModelIds);
     if (decision) {
