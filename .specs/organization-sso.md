@@ -42,7 +42,7 @@ Active.
 4. The final authentication callback MUST independently enforce SSO even when discovery or UI routing was bypassed.
 5. Authentication discovery errors and disagreement between local policy and WorkOS MUST NOT fall back to ordinary signup.
 6. Development fake login MAY bypass SSO only when the existing non-production fake-login feature is enabled.
-7. Converting an existing user to WorkOS MUST invalidate their existing browser sessions and API tokens.
+7. Converting an existing user to WorkOS MUST invalidate their existing browser sessions and MUST NOT eagerly invalidate their API tokens solely through credential-pepper rotation.
 
 ### Invitations
 
@@ -72,7 +72,7 @@ Active.
 
 ### Policy Transitions
 
-1. Enabling SSO or attaching a child to an SSO authority MUST invalidate affected Same-domain users' existing browser sessions and API tokens before enforcement is considered complete.
+1. Enabling SSO or attaching a child to an SSO authority MUST NOT eagerly invalidate affected Same-domain users' existing browser sessions or API tokens solely through credential-pepper rotation; SSO requirements MUST instead be enforced at authentication and authorization boundaries.
 2. Pending authentication artifacts that could mint credentials after the transition SHOULD be expired.
 3. Existing Same-domain ordinary invitations MUST NOT remain usable after the transition.
 4. Policy transitions, configuration failures, denied membership admissions, and administrative overrides MUST be audited without recording tokens, cookies, credentials, or authentication headers.
