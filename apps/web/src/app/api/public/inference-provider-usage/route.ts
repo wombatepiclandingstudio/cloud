@@ -43,6 +43,7 @@ const PROVIDER_ALIASES: Record<string, string> = {
   directbyok: 'other',
   googleaistudio: 'google',
   inceptron: 'inception',
+  martian: 'stealth',
   seed: 'bytedance',
   togetherai: 'together',
   unknown: 'other',
@@ -80,6 +81,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   other: 'Other',
   sambanova: 'SambaNova',
   siliconflow: 'SiliconFlow',
+  stealth: 'Stealth',
   stepfun: 'StepFun',
   streamlake: 'StreamLake',
   together: 'Together AI',
@@ -138,7 +140,7 @@ function successResponse(usage: InferenceProviderUsage[]): NextResponse {
   return NextResponse.json(usage, {
     headers: {
       ...CORS_HEADERS,
-      'Cache-Control': `s-max-age=${CACHE_TTL_SECONDS}`,
+      'Cache-Control': `public, s-maxage=${CACHE_TTL_SECONDS}`,
     },
   });
 }
