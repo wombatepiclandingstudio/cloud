@@ -568,6 +568,24 @@ describe('organizations members trpc router', () => {
       expect(result.acceptInviteUrl).toMatch(/^https?:\/\/.+\/users\/accept-invite\/.+$/);
     });
 
+    it('should reject inviting members into a child organization', async () => {
+      const childOrg = await createOrganization('Child Members Organization', regularUser.id);
+      await db
+        .update(organizations)
+        .set({ parent_organization_id: testOrganization.id })
+        .where(eq(organizations.id, childOrg.id));
+
+      const caller = await createCallerForUser(regularUser.id);
+
+      await expect(
+        caller.organizations.members.invite({
+          organizationId: childOrg.id,
+          email: 'child-org-invite@example.com',
+          role: 'member',
+        })
+      ).rejects.toThrow('Child organizations manage membership through their parent organization.');
+    });
+
     it('should reject billing managers inviting owners', async () => {
       const caller = await createCallerForUser(billingManagerUser.id);
 
