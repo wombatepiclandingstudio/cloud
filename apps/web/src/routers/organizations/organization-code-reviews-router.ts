@@ -4,6 +4,7 @@ import * as z from 'zod';
 import {
   organizationMemberProcedure,
   organizationBillingMutationProcedure,
+  organizationMemberMutationProcedure,
   OrganizationIdInputSchema,
 } from './utils';
 import { createAuditLog } from '@/lib/organizations/organization-audit-logs';
@@ -35,6 +36,11 @@ import {
   getCodeReviewActionRequiredState,
 } from '@/lib/code-reviews/action-required';
 import { getReviewMemoryEnabledFromConfig } from '@/lib/code-reviews/review-memory/settings';
+import {
+  createManualCodeReviewJob,
+  ManualCodeReviewJobInputSchema,
+} from '@/lib/code-reviews/manual-code-review-jobs';
+import { ensureBotUserForOrg } from '@/lib/bot-users/bot-user-service';
 
 const PlatformSchema = z.enum(['github', 'gitlab']).default('github');
 
@@ -66,7 +72,28 @@ const SaveReviewConfigInputSchema = OrganizationIdInputSchema.extend({
   autoConfigureWebhooks: z.boolean().optional().default(true),
 });
 
+const CreateManualReviewJobInputSchema = OrganizationIdInputSchema.extend(
+  ManualCodeReviewJobInputSchema.shape
+);
+
 export const organizationReviewAgentRouter = createTRPCRouter({
+  createManualReviewJob: organizationMemberMutationProcedure
+    .input(CreateManualReviewJobInputSchema)
+    .mutation(async ({ input }) => {
+      const botUser = await ensureBotUserForOrg(input.organizationId, 'code-review');
+      const owner = { type: 'org' as const, id: input.organizationId, userId: botUser.id };
+      return await createManualCodeReviewJob({
+        owner,
+        input: {
+          platform: input.platform,
+          url: input.url,
+          modelSlug: input.modelSlug,
+          thinkingEffort: input.thinkingEffort,
+          instructions: input.instructions,
+        },
+      });
+    }),
+
   /**
    * Gets the GitHub App installation status
    * (Replaces getGitHubStatus - now checks for GitHub App instead of OAuth)

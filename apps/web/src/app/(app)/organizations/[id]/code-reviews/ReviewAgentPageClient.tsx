@@ -36,6 +36,7 @@ type ReviewAgentPageClientProps = {
   successMessage?: string;
   errorMessage?: string;
   initialPlatform?: Platform;
+  localCodeReviewDevelopmentEnabled?: boolean;
   returnTo?: string;
 };
 
@@ -45,6 +46,7 @@ export function ReviewAgentPageClient({
   successMessage,
   errorMessage,
   initialPlatform = 'github',
+  localCodeReviewDevelopmentEnabled = false,
   returnTo,
 }: ReviewAgentPageClientProps) {
   const trpc = useTRPC();
@@ -90,6 +92,8 @@ export function ReviewAgentPageClient({
   const isGitHubAppInstalled =
     githubStatusData?.connected && githubStatusData?.integration?.isValid;
   const isGitLabConnected = gitlabStatusData?.connected && gitlabStatusData?.integration?.isValid;
+  const canUseGitHubJobs = isGitHubAppInstalled || localCodeReviewDevelopmentEnabled;
+  const canUseGitLabJobs = isGitLabConnected || localCodeReviewDevelopmentEnabled;
   const returnPath = returnTo
     ? `${returnTo}${returnTo.includes('?') ? '&' : '?'}code_reviewer_return=true`
     : null;
@@ -179,7 +183,7 @@ export function ReviewAgentPageClient({
         {/* GitHub Tab Content */}
         <TabsContent value="github" className="mt-6 space-y-6">
           {/* GitHub App Required Alert */}
-          {!isGitHubAppInstalled && (
+          {!isGitHubAppInstalled && !localCodeReviewDevelopmentEnabled && (
             <Alert>
               <Rocket className="h-4 w-4" />
               <AlertTitle>GitHub App Required</AlertTitle>
@@ -215,7 +219,7 @@ export function ReviewAgentPageClient({
               <TabsTrigger
                 value="jobs"
                 className="flex items-center gap-2"
-                disabled={!isGitHubAppInstalled}
+                disabled={!canUseGitHubJobs}
               >
                 <ListChecks className="h-4 w-4" />
                 Jobs
@@ -239,8 +243,14 @@ export function ReviewAgentPageClient({
             </TabsContent>
 
             <TabsContent value="jobs" className="mt-6 space-y-4">
-              {isGitHubAppInstalled ? (
-                <CodeReviewJobsCard organizationId={organizationId} platform="github" />
+              {canUseGitHubJobs ? (
+                <CodeReviewJobsCard
+                  organizationId={organizationId}
+                  platform="github"
+                  localCodeReviewDevelopmentEnabled={localCodeReviewDevelopmentEnabled}
+                  defaultModelSlug={selectedConfigData?.modelSlug}
+                  defaultThinkingEffort={selectedConfigData?.thinkingEffort}
+                />
               ) : (
                 <Alert>
                   <ListChecks className="h-4 w-4" />
@@ -276,7 +286,7 @@ export function ReviewAgentPageClient({
         {/* GitLab Tab Content */}
         <TabsContent value="gitlab" className="mt-6 space-y-6">
           {/* GitLab Connection Required Alert */}
-          {!isGitLabConnected && (
+          {!isGitLabConnected && !localCodeReviewDevelopmentEnabled && (
             <Alert>
               <Rocket className="h-4 w-4" />
               <AlertTitle>GitLab Connection Required</AlertTitle>
@@ -312,7 +322,7 @@ export function ReviewAgentPageClient({
               <TabsTrigger
                 value="jobs"
                 className="flex items-center gap-2"
-                disabled={!isGitLabConnected}
+                disabled={!canUseGitLabJobs}
               >
                 <ListChecks className="h-4 w-4" />
                 Jobs
@@ -345,8 +355,14 @@ export function ReviewAgentPageClient({
             </TabsContent>
 
             <TabsContent value="jobs" className="mt-6 space-y-4">
-              {isGitLabConnected ? (
-                <CodeReviewJobsCard organizationId={organizationId} platform="gitlab" />
+              {canUseGitLabJobs ? (
+                <CodeReviewJobsCard
+                  organizationId={organizationId}
+                  platform="gitlab"
+                  localCodeReviewDevelopmentEnabled={localCodeReviewDevelopmentEnabled}
+                  defaultModelSlug={selectedConfigData?.modelSlug}
+                  defaultThinkingEffort={selectedConfigData?.thinkingEffort}
+                />
               ) : (
                 <Alert>
                   <ListChecks className="h-4 w-4" />
