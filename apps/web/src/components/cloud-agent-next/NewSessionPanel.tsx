@@ -97,6 +97,12 @@ import {
   getGitHubIdentityHintDismissed,
   markGitHubIdentityHintDismissed,
 } from '@/components/cloud-agent-next/github-identity-hint';
+import {
+  getBitbucketRepositoryRefreshFailureMessage,
+  refreshSessionRepositories,
+  shouldCacheBitbucketRepositoryRefreshResult,
+  shouldIncludeBitbucketRepositoryRefresh,
+} from '@/components/cloud-agent-next/repository-refresh';
 
 type Repository = {
   id: string | number;
@@ -434,8 +440,16 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
     data: bitbucketRepoData,
     isLoading: isLoadingBitbucketRepos,
     error: bitbucketRepoError,
+    isRefetching: isRefetchingBitbucketRepos,
   } = useQuery({
     ...trpc.organizations.cloudAgentNext.listBitbucketRepositories.queryOptions({
+      organizationId: organizationId ?? '',
+      forceRefresh: false,
+    }),
+    enabled: Boolean(organizationId),
+  });
+  const { data: bitbucketStatusData } = useQuery({
+    ...trpc.organizations.bitbucket.getStatus.queryOptions({
       organizationId: organizationId ?? '',
     }),
     enabled: Boolean(organizationId),
@@ -649,18 +663,114 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
       ),
     });
 
+  const {
+    mutateAsync: refreshBitbucketRepositoriesFromProvider,
+    isPending: isRefreshingBitbucketRepos,
+  } = useMutation(
+    trpc.organizations.bitbucket.refreshRepositories.mutationOptions({
+      onSuccess: result => {
+        if (!organizationId) return;
+
+        const repositoryQueryKey =
+          trpc.organizations.cloudAgentNext.listBitbucketRepositories.queryKey({
+            organizationId,
+            forceRefresh: false,
+          });
+        if (shouldCacheBitbucketRepositoryRefreshResult(result.status)) {
+          queryClient.setQueryData(repositoryQueryKey, result);
+        }
+
+        void queryClient.invalidateQueries({
+          queryKey: trpc.organizations.bitbucket.getStatus.queryKey({ organizationId }),
+        });
+      },
+    })
+  );
+
+  const refreshBitbucketRepositories = useCallback(async () => {
+    if (!organizationId) return;
+
+    const bitbucketStatus =
+      bitbucketStatusData ??
+      (await queryClient.fetchQuery(
+        trpc.organizations.bitbucket.getStatus.queryOptions({
+          organizationId,
+        })
+      ));
+
+    if (bitbucketStatus.integrationId && bitbucketStatus.canManage) {
+      const result = await refreshBitbucketRepositoriesFromProvider({
+        organizationId,
+        integrationId: bitbucketStatus.integrationId,
+      });
+      if (result.status !== 'available') {
+        throw new Error(getBitbucketRepositoryRefreshFailureMessage(result.status));
+      }
+      return;
+    }
+
+    const result = await queryClient.fetchQuery({
+      ...trpc.organizations.cloudAgentNext.listBitbucketRepositories.queryOptions({
+        organizationId,
+        forceRefresh: true,
+      }),
+      staleTime: 0,
+    });
+    if (shouldCacheBitbucketRepositoryRefreshResult(result.status)) {
+      queryClient.setQueryData(
+        trpc.organizations.cloudAgentNext.listBitbucketRepositories.queryKey({
+          organizationId,
+          forceRefresh: false,
+        }),
+        result
+      );
+    }
+    void queryClient.invalidateQueries({
+      queryKey: trpc.organizations.bitbucket.getStatus.queryKey({ organizationId }),
+    });
+    if (result.status !== 'available') {
+      throw new Error(getBitbucketRepositoryRefreshFailureMessage(result.status));
+    }
+  }, [
+    bitbucketStatusData?.canManage,
+    bitbucketStatusData?.integrationId,
+    organizationId,
+    queryClient,
+    refreshBitbucketRepositoriesFromProvider,
+    trpc.organizations.bitbucket.getStatus,
+    trpc.organizations.cloudAgentNext.listBitbucketRepositories,
+  ]);
+
+  const shouldRefreshBitbucketRepositories =
+    organizationId && shouldIncludeBitbucketRepositoryRefresh(bitbucketRepoData?.status);
+
   const refreshRepositories = useCallback(async () => {
     try {
-      await Promise.all([refreshGitHubRepositories(), refreshGitLabRepositories()]);
-      toast.success('GitHub and GitLab repositories refreshed');
+      await refreshSessionRepositories({
+        refreshGitHubRepositories,
+        refreshGitLabRepositories,
+        refreshBitbucketRepositories: shouldRefreshBitbucketRepositories
+          ? refreshBitbucketRepositories
+          : undefined,
+      });
+      toast.success('Repositories refreshed');
     } catch (error) {
       toast.error('Failed to refresh repositories', {
         description: error instanceof Error ? error.message : 'Unknown error',
       });
     }
-  }, [refreshGitHubRepositories, refreshGitLabRepositories]);
+  }, [
+    refreshBitbucketRepositories,
+    refreshGitHubRepositories,
+    refreshGitLabRepositories,
+    shouldRefreshBitbucketRepositories,
+  ]);
 
-  const isRefreshingRepos = isRefreshingGitHubRepos || isRefreshingGitLabRepos;
+  const isRefreshingRepos =
+    isRefreshingGitHubRepos ||
+    isRefreshingGitLabRepos ||
+    isRefreshingBitbucketRepos ||
+    isRefetchingBitbucketRepos;
 
   // ---------------------------------------------------------------------------
   // Integration missing check
@@ -673,9 +783,6 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
     !organizationId || (!isLoadingBitbucketRepos && bitbucketRepoData?.status !== 'available');
   const isIntegrationMissing =
     githubIntegrationMissing && gitlabIntegrationMissing && bitbucketIntegrationMissing;
-  const bitbucketIntegrationHref = organizationId
-    ? `/organizations/${organizationId}/integrations/bitbucket`
-    : null;
 
   // ---------------------------------------------------------------------------
   // Repo popover state (must be declared before early returns to satisfy Rules of Hooks)
@@ -1335,25 +1442,6 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
               ) : unifiedRepositories.length === 0 ? (
                 <div className="text-muted-foreground space-y-2 p-4 text-center text-sm">
                   <p>No repositories found</p>
-                  {organizationId && bitbucketRepoData?.status === 'temporarily_unavailable' && (
-                    <p>The Bitbucket repository cache is temporarily unavailable.</p>
-                  )}
-                  {organizationId &&
-                    bitbucketIntegrationHref &&
-                    bitbucketRepoData?.status &&
-                    bitbucketRepoData.status !== 'available' &&
-                    bitbucketRepoData.status !== 'temporarily_unavailable' && (
-                      <Link
-                        href={bitbucketIntegrationHref}
-                        className="text-link hover:text-link-hover underline underline-offset-4"
-                      >
-                        {bitbucketRepoData.status === 'not_connected'
-                          ? 'Connect a Bitbucket workspace'
-                          : bitbucketRepoData.status === 'reconnect_required'
-                            ? 'Replace the Bitbucket token'
-                            : 'Review the Bitbucket integration'}
-                      </Link>
-                    )}
                   <UIButton
                     type="button"
                     variant="ghost"
@@ -1363,9 +1451,7 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
                     className="mx-auto"
                   >
                     <RefreshCw className={cn('size-3.5', isRefreshingRepos && 'animate-spin')} />
-                    {isRefreshingRepos
-                      ? 'Refreshing GitHub and GitLab...'
-                      : 'Refresh GitHub and GitLab'}
+                    {isRefreshingRepos ? 'Refreshing repositories...' : 'Refresh repositories'}
                   </UIButton>
                 </div>
               ) : (
@@ -1377,43 +1463,14 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
                       onClick={() => void refreshRepositories()}
                       disabled={isRefreshingRepos}
                       className="text-muted-foreground hover:text-foreground shrink-0 rounded-sm p-1 disabled:opacity-50"
-                      aria-label="Refresh GitHub and GitLab repositories"
-                      title="Refresh GitHub and GitLab repositories"
+                      aria-label="Refresh repositories"
+                      title="Refresh repositories"
                     >
                       <RefreshCw
                         className={cn('h-3.5 w-3.5', isRefreshingRepos && 'animate-spin')}
                       />
                     </button>
                   </div>
-                  {organizationId &&
-                    bitbucketIntegrationHref &&
-                    bitbucketRepoData?.status &&
-                    bitbucketRepoData.status !== 'available' && (
-                      <div className="border-b px-3 py-2 text-xs">
-                        {bitbucketRepoData.status === 'temporarily_unavailable' ? (
-                          <span className="text-muted-foreground">
-                            The Bitbucket repository cache is temporarily unavailable.{' '}
-                            <Link
-                              href={bitbucketIntegrationHref}
-                              className="text-link hover:text-link-hover underline underline-offset-4"
-                            >
-                              Review the Bitbucket integration
-                            </Link>
-                          </span>
-                        ) : (
-                          <Link
-                            href={bitbucketIntegrationHref}
-                            className="text-link hover:text-link-hover underline underline-offset-4"
-                          >
-                            {bitbucketRepoData.status === 'not_connected'
-                              ? 'Connect a Bitbucket workspace to list repositories'
-                              : bitbucketRepoData.status === 'reconnect_required'
-                                ? 'Replace the Bitbucket token to list repositories'
-                                : 'Review Bitbucket repository permissions'}
-                          </Link>
-                        )}
-                      </div>
-                    )}
                   <CommandEmpty>No repositories match your search</CommandEmpty>
                   <CommandList className="max-h-64 overflow-auto">
                     {recentRepos.length > 0 && (
