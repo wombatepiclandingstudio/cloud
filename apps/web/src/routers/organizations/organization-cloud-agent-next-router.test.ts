@@ -59,6 +59,20 @@ const mockCreateCloudAgentNextClient = jest.fn(() => ({
   sendMessage: mockSendMessage,
 }));
 
+const mockCreateCloudAgentNextClientForModel = jest.fn(
+  (_authToken: string, _eligibility: unknown) => ({
+    prepareSession: mockPrepareSession,
+    sendMessage: mockSendMessage,
+  })
+);
+
+const mockComputeCloudAgentNextBalanceCheckEligibility = jest.fn<
+  (...args: unknown[]) => Promise<{
+    isFree: boolean;
+    hasUserByokAvailable: boolean;
+  }>
+>();
+
 const mockIsFeatureFlagEnabledOrDevelopment =
   jest.fn<(flagName: string, distinctId: string) => Promise<boolean>>();
 const mockVerifyOrgOwnsSessionV2ByCloudAgentId =
@@ -101,7 +115,12 @@ jest.mock('@/lib/tokens', () => ({
 
 jest.mock('@/lib/cloud-agent-next/cloud-agent-client', () => ({
   createCloudAgentNextClient: mockCreateCloudAgentNextClient,
+  createCloudAgentNextClientForModel: mockCreateCloudAgentNextClientForModel,
   rethrowAsPaymentRequired: jest.fn(),
+}));
+
+jest.mock('@/lib/cloud-agent-next/balance-check-eligibility', () => ({
+  computeCloudAgentNextBalanceCheckEligibility: mockComputeCloudAgentNextBalanceCheckEligibility,
 }));
 
 jest.mock('@/lib/posthog-feature-flags', () => ({
@@ -450,6 +469,10 @@ describe('organizationCloudAgentNextRouter.prepareSession', () => {
       cloudAgentSessionId: 'agent_123',
       kiloSessionId: 'ses_12345678901234567890123456',
     });
+    mockComputeCloudAgentNextBalanceCheckEligibility.mockResolvedValue({
+      isFree: false,
+      hasUserByokAvailable: false,
+    });
   });
 
   it('rejects devcontainer sessions when the feature flag is disabled', async () => {
@@ -565,6 +588,79 @@ describe('organizationCloudAgentNextRouter.prepareSession', () => {
         kilocodeOrganizationId: ORGANIZATION_ID,
       })
     );
+  });
+
+  it('routes free models through the AppBuilder client so the worker skips the balance minimum', async () => {
+    mockComputeCloudAgentNextBalanceCheckEligibility.mockResolvedValueOnce({
+      isFree: true,
+      hasUserByokAvailable: false,
+    });
+    const caller = createCaller({ user: { id: 'user-free', is_admin: false } as User });
+
+    await caller.prepareSession({
+      organizationId: ORGANIZATION_ID,
+      prompt: 'Test prompt',
+      mode: 'code',
+      model: 'kilo/test-model',
+      githubRepo: 'acme/repo',
+      autoInitiate: true,
+      devcontainer: false,
+    });
+
+    expect(mockComputeCloudAgentNextBalanceCheckEligibility).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: 'kilo/test-model',
+        organizationId: ORGANIZATION_ID,
+      })
+    );
+    expect(mockCreateCloudAgentNextClientForModel).toHaveBeenCalledWith('cloud-agent-token', {
+      isFree: true,
+      hasUserByokAvailable: false,
+    });
+    expect(mockCreateCloudAgentNextClient).not.toHaveBeenCalled();
+  });
+
+  it('routes BYOK-capable paid models through the AppBuilder client so the worker skips the balance minimum', async () => {
+    mockComputeCloudAgentNextBalanceCheckEligibility.mockResolvedValueOnce({
+      isFree: false,
+      hasUserByokAvailable: true,
+    });
+    const caller = createCaller({ user: { id: 'user-byok', is_admin: false } as User });
+
+    await caller.prepareSession({
+      organizationId: ORGANIZATION_ID,
+      prompt: 'Test prompt',
+      mode: 'code',
+      model: 'kilo/paid-byok-model',
+      githubRepo: 'acme/repo',
+      autoInitiate: true,
+      devcontainer: false,
+    });
+
+    expect(mockCreateCloudAgentNextClientForModel).toHaveBeenCalledWith('cloud-agent-token', {
+      isFree: false,
+      hasUserByokAvailable: true,
+    });
+    expect(mockCreateCloudAgentNextClient).not.toHaveBeenCalled();
+  });
+
+  it('routes paid models the org has no BYOK key for through the model-aware helper with a paid eligibility', async () => {
+    const caller = createCaller({ user: { id: 'user-paid', is_admin: false } as User });
+
+    await caller.prepareSession({
+      organizationId: ORGANIZATION_ID,
+      prompt: 'Test prompt',
+      mode: 'code',
+      model: 'kilo/paid-model',
+      githubRepo: 'acme/repo',
+      autoInitiate: true,
+      devcontainer: false,
+    });
+
+    expect(mockCreateCloudAgentNextClientForModel).toHaveBeenCalledWith('cloud-agent-token', {
+      isFree: false,
+      hasUserByokAvailable: false,
+    });
   });
 });
 

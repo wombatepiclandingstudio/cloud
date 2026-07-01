@@ -1,10 +1,11 @@
 import 'server-only';
 import { createTRPCRouter } from '@/lib/trpc/init';
 import {
-  createAppBuilderCloudAgentNextClient,
   createCloudAgentNextClient,
+  createCloudAgentNextClientForModel,
   rethrowAsPaymentRequired,
 } from '@/lib/cloud-agent-next/cloud-agent-client';
+import { computeCloudAgentNextBalanceCheckEligibility } from '@/lib/cloud-agent-next/balance-check-eligibility';
 import { rethrowAsTerminalError } from '@/lib/cloud-agent-next/terminal-errors';
 import { generateCloudAgentToken } from '@/lib/tokens';
 import { isFeatureFlagEnabledOrDevelopment } from '@/lib/posthog-feature-flags';
@@ -58,7 +59,6 @@ import { TRPCError } from '@trpc/server';
 import { generateMessageId } from '@/lib/cloud-agent-sdk/message-id';
 import { getBalanceForOrganizationUser } from '@/lib/organizations/organization-usage';
 import { buildCloudAgentNextEligibility } from '../cloud-agent-next-eligibility';
-import { isFreeModel } from '@/lib/ai-gateway/is-free-model';
 
 function buildTerminalUrl(params: {
   cloudAgentSessionId: string;
@@ -226,10 +226,13 @@ export const organizationCloudAgentNextRouter = createTRPCRouter({
       }
 
       const authToken = generateCloudAgentToken(ctx.user);
-      const isModelFree = await isFreeModel(input.model);
-      const client = isModelFree
-        ? createAppBuilderCloudAgentNextClient(authToken)
-        : createCloudAgentNextClient(authToken);
+      const eligibility = await computeCloudAgentNextBalanceCheckEligibility({
+        fromDb: db,
+        user: ctx.user,
+        modelId: input.model,
+        organizationId: input.organizationId,
+      });
+      const client = createCloudAgentNextClientForModel(authToken, eligibility);
 
       const {
         gitlabProject,
