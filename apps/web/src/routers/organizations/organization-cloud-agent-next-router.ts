@@ -2,8 +2,10 @@ import 'server-only';
 import { createTRPCRouter } from '@/lib/trpc/init';
 import {
   createCloudAgentNextClient,
+  createCloudAgentNextClientForModel,
   rethrowAsPaymentRequired,
 } from '@/lib/cloud-agent-next/cloud-agent-client';
+import { computeCloudAgentNextBalanceCheckEligibility } from '@/lib/cloud-agent-next/balance-check-eligibility';
 import { rethrowAsTerminalError } from '@/lib/cloud-agent-next/terminal-errors';
 import { generateCloudAgentToken } from '@/lib/tokens';
 import { isFeatureFlagEnabledOrDevelopment } from '@/lib/posthog-feature-flags';
@@ -224,7 +226,13 @@ export const organizationCloudAgentNextRouter = createTRPCRouter({
       }
 
       const authToken = generateCloudAgentToken(ctx.user);
-      const client = createCloudAgentNextClient(authToken);
+      const eligibility = await computeCloudAgentNextBalanceCheckEligibility({
+        fromDb: db,
+        user: ctx.user,
+        modelId: input.model,
+        organizationId: input.organizationId,
+      });
+      const client = createCloudAgentNextClientForModel(authToken, eligibility);
 
       const {
         gitlabProject,
