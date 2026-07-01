@@ -1,6 +1,7 @@
 import 'server-only';
 import { type db } from '@/lib/drizzle';
 import { isFreeModel } from '@/lib/ai-gateway/is-free-model';
+import { isKiloExclusiveModel } from '@/lib/ai-gateway/models';
 import {
   getModelUserByokProviders,
   getOrganizationByokProviderIds,
@@ -23,6 +24,12 @@ export type BalanceCheckModelEligibility = {
  *   the session is billed against the user's own key rather than their
  *   balance.
  *
+ * Kilo-exclusive models (e.g. `deepseek/deepseek-v4-pro:discounted`) are
+ * always excluded from the BYOK bypass: they are Kilo-funded and platform
+ * billed, so even when `getModelUserByokProviders` reports a provider that
+ * can route the model, they must still go through the worker-side balance
+ * check and cannot be legitimately served via a user's own BYOK key.
+ *
  * Matches the same `isFree || hasUserByokAvailable` predicate the
  * NewSessionPanel model picker uses to filter `hasLimitedAccess` users, so
  * the picker and the router agree on which models bypass balance.
@@ -36,6 +43,10 @@ export async function computeCloudAgentNextBalanceCheckEligibility(params: {
   const isFree = await isFreeModel(params.modelId);
   if (isFree) {
     return { isFree: true, hasUserByokAvailable: false };
+  }
+
+  if (isKiloExclusiveModel(params.modelId)) {
+    return { isFree: false, hasUserByokAvailable: false };
   }
 
   const modelProviders = await getModelUserByokProviders(params.modelId);
