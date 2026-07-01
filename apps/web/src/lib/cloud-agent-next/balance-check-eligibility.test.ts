@@ -45,8 +45,6 @@ describe('computeCloudAgentNextBalanceCheckEligibility', () => {
   });
 
   it('returns hasUserByokAvailable: false for a Kilo-exclusive model even when BYOK providers can serve it', async () => {
-    mockGetModelUserByokProviders.mockResolvedValueOnce(['openrouter']);
-
     const result = await computeCloudAgentNextBalanceCheckEligibility({
       fromDb: fakeDb,
       user: fakeUser,
@@ -54,12 +52,12 @@ describe('computeCloudAgentNextBalanceCheckEligibility', () => {
     });
 
     expect(result).toEqual({ isFree: false, hasUserByokAvailable: false });
+    expect(mockGetModelUserByokProviders).not.toHaveBeenCalled();
     expect(mockGetUserByokProviderIds).not.toHaveBeenCalled();
     expect(mockGetOrganizationByokProviderIds).not.toHaveBeenCalled();
   });
 
   it('returns hasUserByokAvailable: false for a Kilo-exclusive model even when the user has an enabled matching BYOK provider', async () => {
-    mockGetModelUserByokProviders.mockResolvedValueOnce(['openrouter']);
     mockGetUserByokProviderIds.mockResolvedValueOnce(['openrouter']);
 
     const result = await computeCloudAgentNextBalanceCheckEligibility({
@@ -69,11 +67,11 @@ describe('computeCloudAgentNextBalanceCheckEligibility', () => {
     });
 
     expect(result).toEqual({ isFree: false, hasUserByokAvailable: false });
+    expect(mockGetModelUserByokProviders).not.toHaveBeenCalled();
     expect(mockGetUserByokProviderIds).not.toHaveBeenCalled();
   });
 
   it('returns hasUserByokAvailable: false for a Kilo-exclusive model in an organization context', async () => {
-    mockGetModelUserByokProviders.mockResolvedValueOnce(['openrouter']);
     mockGetOrganizationByokProviderIds.mockResolvedValueOnce(['openrouter']);
 
     const result = await computeCloudAgentNextBalanceCheckEligibility({
@@ -84,6 +82,7 @@ describe('computeCloudAgentNextBalanceCheckEligibility', () => {
     });
 
     expect(result).toEqual({ isFree: false, hasUserByokAvailable: false });
+    expect(mockGetModelUserByokProviders).not.toHaveBeenCalled();
     expect(mockGetOrganizationByokProviderIds).not.toHaveBeenCalled();
   });
 
