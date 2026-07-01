@@ -1,6 +1,7 @@
 import 'server-only';
 import { baseProcedure, createTRPCRouter } from '@/lib/trpc/init';
 import {
+  createAppBuilderCloudAgentNextClient,
   createCloudAgentNextClient,
   rethrowAsPaymentRequired,
 } from '@/lib/cloud-agent-next/cloud-agent-client';
@@ -8,6 +9,7 @@ import { rethrowAsTerminalError } from '@/lib/cloud-agent-next/terminal-errors';
 import { generateCloudAgentToken } from '@/lib/tokens';
 import { isFeatureFlagEnabledOrDevelopment } from '@/lib/posthog-feature-flags';
 import { fetchGitHubRepositoriesForUser } from '@/lib/cloud-agent/github-integration-helpers';
+import { isFreeModel } from '@/lib/ai-gateway/is-free-model';
 import {
   getGitLabInstanceUrlForUser,
   buildGitLabCloneUrl,
@@ -135,7 +137,10 @@ export const cloudAgentNextRouter = createTRPCRouter({
       }
 
       const authToken = generateCloudAgentToken(ctx.user);
-      const client = createCloudAgentNextClient(authToken);
+      const isModelFree = await isFreeModel(input.model);
+      const client = isModelFree
+        ? createAppBuilderCloudAgentNextClient(authToken)
+        : createCloudAgentNextClient(authToken);
 
       const { gitlabProject, githubRepo, attachments, images, ...restInput } = input;
 

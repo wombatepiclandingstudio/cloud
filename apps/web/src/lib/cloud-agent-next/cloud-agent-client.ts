@@ -809,3 +809,23 @@ export function createAppBuilderCloudAgentNextClient(authToken: string): CloudAg
     skipBalanceCheck: true,
   });
 }
+
+/**
+ * Pick a Cloud Agent Next client for a session start based on the chosen model.
+ *
+ * Free models (and BYOK-capable models, where the user provides their own key
+ * and the model still bypasses billing) cost the user nothing, so we mirror
+ * AppBuilder and set `x-skip-balance-check: true` to allow $0-balance users to
+ * still create sessions when their selected model is free. Paid models stay on
+ * the default client so the worker balance middleware can still enforce the
+ * $1 minimum on paid-model sessions.
+ */
+export function createCloudAgentNextClientForModel(
+  authToken: string,
+  model: { isFree: boolean }
+): CloudAgentNextClient {
+  if (model.isFree) {
+    return createAppBuilderCloudAgentNextClient(authToken);
+  }
+  return createCloudAgentNextClient(authToken);
+}

@@ -195,6 +195,7 @@ let createCaller: (ctx: { user: User }) => {
     balance: number;
     minBalance: number;
     isEligible: boolean;
+    accessLevel: 'full' | 'limited' | 'blocked';
   }>;
   listGitHubRepositories: (input: {
     organizationId: string;
@@ -324,21 +325,28 @@ describe('organizationCloudAgentNextRouter helper procedures', () => {
   });
 
   it.each([
-    { balance: 1, isEligible: true },
-    { balance: 0.99, isEligible: false },
-  ])('reports organization eligibility for a $balance balance', async ({ balance, isEligible }) => {
-    mockGetBalanceForOrganizationUser.mockResolvedValue({ balance });
-    const caller = createCaller({ user: { id: 'member-user', is_admin: false } as User });
+    { balance: 1, isEligible: true, accessLevel: 'full' as const },
+    { balance: 0.99, isEligible: false, accessLevel: 'limited' as const },
+  ])(
+    'reports organization eligibility for a $balance balance',
+    async ({ balance, isEligible, accessLevel }) => {
+      mockGetBalanceForOrganizationUser.mockResolvedValue({ balance });
+      const caller = createCaller({ user: { id: 'member-user', is_admin: false } as User });
 
-    await expect(caller.checkEligibility({ organizationId: ORGANIZATION_ID })).resolves.toEqual({
-      balance,
-      minBalance: 1,
-      isEligible,
-    });
-    expect(mockEnsureOrganizationAccess).toHaveBeenCalledWith('member-user', ORGANIZATION_ID);
-    expect(mockGetBalanceForOrganizationUser).toHaveBeenCalledWith(ORGANIZATION_ID, 'member-user');
-    expect(mockCreateCloudAgentNextClient).not.toHaveBeenCalled();
-  });
+      await expect(caller.checkEligibility({ organizationId: ORGANIZATION_ID })).resolves.toEqual({
+        balance,
+        minBalance: 1,
+        isEligible,
+        accessLevel,
+      });
+      expect(mockEnsureOrganizationAccess).toHaveBeenCalledWith('member-user', ORGANIZATION_ID);
+      expect(mockGetBalanceForOrganizationUser).toHaveBeenCalledWith(
+        ORGANIZATION_ID,
+        'member-user'
+      );
+      expect(mockCreateCloudAgentNextClient).not.toHaveBeenCalled();
+    }
+  );
 
   it('rejects eligibility checks before reading balance when membership is denied', async () => {
     mockEnsureOrganizationAccess.mockImplementation(() => {

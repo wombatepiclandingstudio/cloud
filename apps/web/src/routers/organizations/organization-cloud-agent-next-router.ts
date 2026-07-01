@@ -1,6 +1,7 @@
 import 'server-only';
 import { createTRPCRouter } from '@/lib/trpc/init';
 import {
+  createAppBuilderCloudAgentNextClient,
   createCloudAgentNextClient,
   rethrowAsPaymentRequired,
 } from '@/lib/cloud-agent-next/cloud-agent-client';
@@ -57,6 +58,7 @@ import { TRPCError } from '@trpc/server';
 import { generateMessageId } from '@/lib/cloud-agent-sdk/message-id';
 import { getBalanceForOrganizationUser } from '@/lib/organizations/organization-usage';
 import { buildCloudAgentNextEligibility } from '../cloud-agent-next-eligibility';
+import { isFreeModel } from '@/lib/ai-gateway/is-free-model';
 
 function buildTerminalUrl(params: {
   cloudAgentSessionId: string;
@@ -224,7 +226,10 @@ export const organizationCloudAgentNextRouter = createTRPCRouter({
       }
 
       const authToken = generateCloudAgentToken(ctx.user);
-      const client = createCloudAgentNextClient(authToken);
+      const isModelFree = await isFreeModel(input.model);
+      const client = isModelFree
+        ? createAppBuilderCloudAgentNextClient(authToken)
+        : createCloudAgentNextClient(authToken);
 
       const {
         gitlabProject,

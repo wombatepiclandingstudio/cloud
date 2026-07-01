@@ -139,7 +139,12 @@ let createCaller: (ctx: { user: User }) => {
     contentType: 'application/pdf';
     contentLength: number;
   }) => Promise<unknown>;
-  checkEligibility: () => Promise<{ balance: number; minBalance: number; isEligible: boolean }>;
+  checkEligibility: () => Promise<{
+    balance: number;
+    minBalance: number;
+    isEligible: boolean;
+    accessLevel: 'full' | 'limited' | 'blocked';
+  }>;
   listGitHubRepositories: (input: { forceRefresh: boolean }) => Promise<unknown>;
   listGitLabRepositories: (input: { forceRefresh: boolean }) => Promise<unknown>;
 };
@@ -229,9 +234,9 @@ describe('cloudAgentNextRouter helper procedures', () => {
   });
 
   it.each([
-    { balance: 1, isEligible: true },
-    { balance: 0.99, isEligible: false },
-  ])('reports eligibility for a $balance balance', async ({ balance, isEligible }) => {
+    { balance: 1, isEligible: true, accessLevel: 'full' as const },
+    { balance: 0.99, isEligible: false, accessLevel: 'limited' as const },
+  ])('reports eligibility for a $balance balance', async ({ balance, isEligible, accessLevel }) => {
     mockGetBalanceForUser.mockResolvedValue({ balance });
     const user = { id: 'user-eligibility', is_admin: false } as User;
     const caller = createCaller({ user });
@@ -240,6 +245,7 @@ describe('cloudAgentNextRouter helper procedures', () => {
       balance,
       minBalance: 1,
       isEligible,
+      accessLevel,
     });
     expect(mockGetBalanceForUser).toHaveBeenCalledWith(user);
     expect(mockCreateCloudAgentNextClient).not.toHaveBeenCalled();
