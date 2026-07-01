@@ -3,8 +3,8 @@ export type AccessLevel = 'full' | 'limited' | 'blocked';
 export type AccessLevelEligibility = {
   balance: number;
   minBalance: number;
-  accessLevel: AccessLevel;
   isEligible: boolean;
+  accessLevel: AccessLevel;
 };
 
 export function buildAccessLevelEligibility(
@@ -15,7 +15,7 @@ export function buildAccessLevelEligibility(
   return {
     balance,
     minBalance,
-    accessLevel,
     isEligible: accessLevel === 'full',
+    accessLevel,
   };
 }
