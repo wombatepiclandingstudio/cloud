@@ -12,19 +12,39 @@ import {
 import { isCodestralModel } from '@/lib/ai-gateway/providers/mistral';
 import { mapModelIdToVercel } from '@/lib/ai-gateway/providers/vercel/mapModelIdToVercel';
 import type { BYOKResult } from '@/lib/ai-gateway/providers/types';
-import { getVercelModelsMetadata } from '@/lib/ai-gateway/providers/gateway-models-cache';
+import {
+  getOpenRouterModelsMetadata,
+  getVercelModelsMetadata,
+} from '@/lib/ai-gateway/providers/gateway-models-cache';
 import type { OpenRouterModel } from '@/lib/organizations/organization-types';
+import type { StoredModel } from '@kilocode/db';
 import { isKiloExclusiveModel } from '@/lib/ai-gateway/models';
 
 export async function getModelUserByokProviders(modelId: string): Promise<UserByokProviderId[]> {
-  const vercelModelMetadata = await getVercelModelsMetadata();
-  if (Object.keys(vercelModelMetadata).length === 0) {
-    console.error('[getModelUserByokProviders] no Vercel model metadata for model %s', modelId);
+  const [vercelModelMetadata, openRouterModelMetadata] = await Promise.all([
+    getVercelModelsMetadata(),
+    getOpenRouterModelsMetadata(),
+  ]);
+  if (
+    Object.keys(vercelModelMetadata).length === 0 &&
+    Object.keys(openRouterModelMetadata).length === 0
+  ) {
+    console.error('[getModelUserByokProviders] no model metadata for model %s', modelId);
     return [];
   }
+  const vercelModel = vercelModelMetadata[mapModelIdToVercel(modelId, false)];
+  let endpoints: StoredModel['endpoints'] | undefined;
+  if (vercelModel) {
+    if ((vercelModel.type ?? 'language') !== 'language') return [];
+    endpoints = vercelModel.endpoints;
+  } else {
+    endpoints = openRouterModelMetadata[modelId]?.endpoints;
+  }
   const providers: UserByokProviderId[] =
-    vercelModelMetadata[mapModelIdToVercel(modelId, false)]?.endpoints
-      .map(ep => VercelUserByokInferenceProviderIdSchema.safeParse(ep.provider_name ?? ep.tag).data)
+    endpoints
+      ?.map(
+        ep => VercelUserByokInferenceProviderIdSchema.safeParse(ep.provider_name ?? ep.tag).data
+      )
       .filter(providerId => providerId !== undefined) ?? [];
   if (providers.length === 0) {
     console.debug(`[getModelUserByokProviders] no user byok providers for ${modelId}`);
