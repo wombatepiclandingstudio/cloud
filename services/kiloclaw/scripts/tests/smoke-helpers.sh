@@ -55,7 +55,25 @@ assert_kilo_chat_plugin_loaded() {
 import json
 import sys
 
-doc = json.load(sys.stdin)
+# openclaw >=2026.6.11 may print log lines (e.g. "[state-migrations] ...") on
+# stderr, which the 2>&1 capture interleaves ahead of the JSON payload. A bare
+# "[state-migrations]" line also begins with "[", and a log line may contain a
+# stray "{", so we cannot just take the first bracket — try every "["/"{"
+# candidate offset until one decodes.
+raw = sys.stdin.read()
+doc = None
+for _start in [0] + [i for i, c in enumerate(raw) if c in "[{"]:
+    try:
+        _cand, _ = json.JSONDecoder().raw_decode(raw[_start:])
+    except Exception:
+        continue
+    # Accept only the real payload object, not a self-contained JSON fragment
+    # (e.g. a "[1, 2, 3]" list) embedded in an interleaved log line.
+    if isinstance(_cand, dict) and "plugin" in _cand:
+        doc = _cand
+        break
+if doc is None:
+    raise SystemExit("no plugin JSON object in command output")
 plugin = doc.get("plugin", {})
 status = plugin.get("status")
 error = plugin.get("error")
@@ -77,7 +95,22 @@ import json
 import sys
 
 known_message = "channel plugin manifest declares kilo-chat without channelConfigs metadata; add openclaw.plugin.json#channelConfigs so config schema and setup surfaces work before runtime loads. Channels without channelConfigs still appear in channel listings, but setup UI may be limited."
-doc = json.load(sys.stdin)
+# Tolerate stderr log lines interleaved by the 2>&1 capture (see above): try
+# every "["/"{" candidate offset until one decodes.
+raw = sys.stdin.read()
+doc = None
+for _start in [0] + [i for i, c in enumerate(raw) if c in "[{"]:
+    try:
+        _cand, _ = json.JSONDecoder().raw_decode(raw[_start:])
+    except Exception:
+        continue
+    # Accept only the real payload object, not a self-contained JSON fragment
+    # (e.g. a stray list) embedded in an interleaved log line.
+    if isinstance(_cand, dict) and "diagnostics" in _cand:
+        doc = _cand
+        break
+if doc is None:
+    raise SystemExit("no diagnostics JSON object in command output")
 diagnostics = doc.get("diagnostics", [])
 if not isinstance(diagnostics, list):
     raise SystemExit("diagnostics is not a list")

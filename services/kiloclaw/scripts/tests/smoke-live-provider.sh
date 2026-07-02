@@ -275,7 +275,25 @@ import json
 import sys
 
 nonce = sys.argv[1]
-doc = json.load(sys.stdin)
+# openclaw >=2026.6.11 may print log lines (e.g. "[state-migrations] ...") on
+# stderr, which the 2>&1 capture interleaves ahead of the JSON payload. A bare
+# "[state-migrations]" line also begins with "[", and a log line may contain a
+# stray "{", so we cannot just take the first bracket — try every "["/"{"
+# candidate offset until one decodes.
+raw = sys.stdin.read()
+doc = None
+for _start in [0] + [i for i, c in enumerate(raw) if c in "[{"]:
+    try:
+        _cand, _ = json.JSONDecoder().raw_decode(raw[_start:])
+    except Exception:
+        continue
+    # Accept only the real response object, not a self-contained JSON fragment
+    # (e.g. a stray list) embedded in an interleaved log line.
+    if isinstance(_cand, dict) and ("result" in _cand or "payloads" in _cand):
+        doc = _cand
+        break
+if doc is None:
+    raise SystemExit("no result JSON object in command output")
 result = doc.get("result", doc)
 payloads = result.get("payloads", []) if isinstance(result, dict) else []
 texts = [entry.get("text", "") for entry in payloads if isinstance(entry, dict)]
@@ -289,6 +307,86 @@ print("nonce returned")
     echo "  details: $parsed"
     echo "  Gateway output suppressed because provider responses can contain sensitive data."
   fi
+}
+
+assert_kilocode_vision_capability() {
+  # Regression guard for the removed model-catalog-refresh workaround (was cloud
+  # #4054). That workaround wrote the gateway catalog into
+  # models.providers.kilocode.models so the image-capability gate saw vision
+  # modalities, because OpenClaw <2026.6.9 could skip runtime discovery for a
+  # refreshable catalog (openclaw #93775). openclaw #93786 (in 2026.6.9) fixes
+  # that, so on the candidate the kilocode catalog must advertise image input
+  # from NATIVE discovery alone. An "available" kilocode model with image input
+  # proves discovery repopulated capability metadata without the workaround.
+  local output
+  local result="pending"
+
+  for _ in $(seq 1 60); do
+    output=$(docker exec "$CID" openclaw models list --provider kilocode --all --json 2>/dev/null || true)
+    result=$(python3 -c '
+import json, sys
+
+raw = sys.stdin.read()
+# Tolerate any non-JSON log preamble (e.g. openclaw [state-migrations]) by trying
+# each candidate JSON start until one decodes to the model catalog shape. A bare
+# "[state-migrations]" line also begins with "[", and a self-contained fragment
+# (e.g. a stray list) in an interleaved log line could parse on its own, so accept
+# only a top-level list of model objects (or a dict with a "models" list).
+def _as_catalog(cand):
+    if isinstance(cand, dict) and isinstance(cand.get("models"), list):
+        cand = cand["models"]
+    # Require a non-empty list whose entries look like model objects (have a
+    # "key" or "provider"), so an empty list or a stray list of unrelated dicts
+    # from interleaved log noise is not mistaken for the real catalog.
+    if (
+        isinstance(cand, list)
+        and cand
+        and all(isinstance(x, dict) for x in cand)
+        and any(("key" in x or "provider" in x) for x in cand)
+    ):
+        return cand
+    return None
+
+models = None
+for start in [0] + [i for i, c in enumerate(raw) if c in "[{"]:
+    try:
+        cand, _ = json.JSONDecoder().raw_decode(raw[start:])
+    except Exception:
+        continue
+    models = _as_catalog(cand)
+    if models is not None:
+        break
+if models is None:
+    print("no-catalog"); raise SystemExit(0)
+
+def is_kilocode(m):
+    return str(m.get("key", "")).startswith("kilocode/") or m.get("provider") == "kilocode"
+
+def has_image(m):
+    inp = m.get("input")
+    if isinstance(inp, str):
+        return "image" in inp
+    if isinstance(inp, (list, tuple)):
+        return "image" in inp
+    return False
+
+kc = [m for m in models if isinstance(m, dict) and is_kilocode(m)]
+if any(has_image(m) and m.get("available") is True for m in kc):
+    print("image-capable")
+elif any(has_image(m) for m in kc):
+    print("image-capable-unavailable")
+elif kc:
+    print("text-only")
+else:
+    print("no-kilocode-models")
+' <<< "$output")
+    if [ "$result" = "image-capable" ]; then
+      break
+    fi
+    sleep 1
+  done
+
+  check "kilocode native vision capability (post-#4054-revert)" "image-capable" "$result"
 }
 
 run_phase() {
@@ -316,6 +414,9 @@ run_phase() {
     assert_app_config_patch "$CID" "$PORT" "$TOKEN"
     assert_app_config_agent_defaults "$CID" "$PORT" "$TOKEN"
     assert_app_config_agents_crud "$CID" "$PORT" "$TOKEN"
+    # Candidate only: prove the removed #4054 catalog-refresh workaround is no
+    # longer needed — native discovery must supply kilocode image capability.
+    assert_kilocode_vision_capability
   fi
   assert_exec_approvals_seeded "$CID"
   echo
