@@ -55,7 +55,6 @@
     "R2_ATTACHMENTS_BUCKET": "cloud-agent-attachments",
     "WS_ALLOWED_ORIGINS": "https://app.kilo.ai,https://api.kilo.ai",
     "KILO_SESSION_INGEST_URL": "https://ingest.kilosessions.ai",
-    "MANAGED_SCM_CONTAINMENT_ORG_IDS": "",
   },
   "placement": { "mode": "smart" },
   /**
@@ -146,7 +145,11 @@
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile",
-      "instance_type": "standard-4",
+      "instance_type": {
+        "vcpu": 4,
+        "memory_mib": 12288,
+        "disk_mb": 20000,
+      },
       "image_vars": {
         "KILOCODE_CLI_VERSION": "7.3.54",
       },
@@ -156,7 +159,11 @@
     {
       "class_name": "SandboxSmall",
       "image": "./Dockerfile",
-      "instance_type": "standard-4",
+      "instance_type": {
+        "vcpu": 2,
+        "memory_mib": 6144,
+        "disk_mb": 10000,
+      },
       "image_vars": {
         "KILOCODE_CLI_VERSION": "7.3.54",
       },
@@ -166,7 +173,11 @@
     {
       "class_name": "SandboxDIND",
       "image": "./Dockerfile.dind",
-      "instance_type": "standard-3",
+      "instance_type": {
+        "vcpu": 2,
+        "memory_mib": 6144,
+        "disk_mb": 10000,
+      },
       "image_vars": {
         "KILOCODE_CLI_VERSION": "7.3.54",
       },
@@ -190,7 +201,11 @@
     {
       "class_name": "SandboxContainment",
       "image": "./Dockerfile",
-      "instance_type": "standard-4",
+      "instance_type": {
+        "vcpu": 4,
+        "memory_mib": 12288,
+        "disk_mb": 20000,
+      },
       "image_vars": {
         "KILOCODE_CLI_VERSION": "7.3.54",
       },
@@ -200,7 +215,11 @@
     {
       "class_name": "SandboxSmallContainment",
       "image": "./Dockerfile",
-      "instance_type": "standard-4",
+      "instance_type": {
+        "vcpu": 2,
+        "memory_mib": 6144,
+        "disk_mb": 10000,
+      },
       "image_vars": {
         "KILOCODE_CLI_VERSION": "7.3.54",
       },
