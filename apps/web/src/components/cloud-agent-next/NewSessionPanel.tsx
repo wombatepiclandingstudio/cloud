@@ -872,12 +872,21 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
   // ---------------------------------------------------------------------------
   const isPromptTooLong = prompt.length > CLOUD_AGENT_PROMPT_MAX_LENGTH;
 
+  const selectedModelOption = modelOptions.find(m => m.id === model);
+  // Limited-access users can submit when they've picked a free or BYOK-capable
+  // model from the filtered picker; the server still gates paid models behind
+  // the minimum balance, but the submit button shouldn't pretend otherwise.
+  const limitedAccessModelIsAllowed =
+    hasLimitedAccess &&
+    !!selectedModelOption &&
+    (selectedModelOption.isFree || selectedModelOption.hasUserByokAvailable);
+
   const isFormValid =
     prompt.trim().length > 0 &&
     !isPromptTooLong &&
     model.length > 0 &&
     !isPreparing &&
-    !hasInsufficientBalance &&
+    (!hasInsufficientBalance || limitedAccessModelIsAllowed) &&
     !attachmentUpload.hasUploadingAttachments;
 
   const handleStartSession = useCallback(async () => {
