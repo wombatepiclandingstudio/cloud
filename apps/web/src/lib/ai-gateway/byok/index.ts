@@ -35,7 +35,7 @@ export async function getModelUserByokProviders(modelId: string): Promise<UserBy
   const vercelModel = vercelModelMetadata[mapModelIdToVercel(modelId, false)];
   let endpoints: StoredModel['endpoints'] | undefined;
   if (vercelModel) {
-    if ((vercelModel.type ?? 'language') !== 'language') return [];
+    if (vercelModel.type !== 'language') return [];
     endpoints = vercelModel.endpoints;
   } else {
     endpoints = openRouterModelMetadata[modelId]?.endpoints;

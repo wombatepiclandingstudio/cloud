@@ -39,7 +39,13 @@ function makeStoredModel(overrides: Partial<StoredModel> = {}): StoredModel {
 
 describe('byok.listSupportedModels', () => {
   test('includes a Novita-served model that only exists in OpenRouter metadata', async () => {
-    mockedGetVercelModelsMetadata.mockResolvedValue({});
+    mockedGetVercelModelsMetadata.mockResolvedValue({
+      'unrelated/vercel-model': makeStoredModel({
+        id: 'unrelated/vercel-model',
+        name: 'Unrelated Vercel Model',
+        endpoints: [{ provider_name: 'novita' }],
+      }),
+    });
     mockedGetOpenRouterModelsMetadata.mockResolvedValue({
       'novita-only/some-model': makeStoredModel({
         id: 'novita-only/some-model',
@@ -50,7 +56,10 @@ describe('byok.listSupportedModels', () => {
 
     const result = await callListSupportedModels();
 
-    expect(result.novita).toEqual(['Some Model (novita-only/some-model)']);
+    expect(result.novita).toEqual([
+      'Some Model (novita-only/some-model)',
+      'Unrelated Vercel Model (unrelated/vercel-model)',
+    ]);
   });
 
   test('includes a Novita-served model that exists in both Vercel and OpenRouter metadata', async () => {

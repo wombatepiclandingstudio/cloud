@@ -114,7 +114,7 @@ async function fetchSupportedModels(): Promise<Record<string, string[]>> {
     const vercelModel = vercelModelMetadata[mapModelIdToVercel(openRouterModel.id, false)];
     let endpoints: typeof openRouterModel.endpoints;
     if (vercelModel) {
-      if ((vercelModel.type ?? 'language') !== 'language') continue;
+      if (vercelModel.type !== 'language') continue;
       endpoints = vercelModel.endpoints;
     } else {
       endpoints = openRouterModel.endpoints;
