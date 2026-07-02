@@ -2518,8 +2518,8 @@ importers:
         specifier: '>=0.25.0'
         version: 0.27.4
       openclaw:
-        specifier: 2026.6.8
-        version: 2026.6.8(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+        specifier: 2026.6.11
+        version: 2026.6.11(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       vitest:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@25.5.2)(@vitest/coverage-v8@4.1.6)(@vitest/ui@4.1.6)(esbuild@0.27.4)(jiti@2.7.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.4)
@@ -2542,8 +2542,8 @@ importers:
         specifier: '>=0.25.0'
         version: 0.27.4
       openclaw:
-        specifier: 2026.6.8
-        version: 2026.6.8(bufferutil@4.1.0)(utf-8-validate@6.0.6)
+        specifier: 2026.6.11
+        version: 2026.6.11(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       vitest:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@25.5.2)(@vitest/coverage-v8@4.1.6)(@vitest/ui@4.1.6)(esbuild@0.27.4)(jiti@2.7.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.4)
@@ -14822,8 +14822,8 @@ packages:
       zod:
         optional: true
 
-  openclaw@2026.6.8:
-    resolution: {integrity: sha512-iziR8fi69+ojrtX7FYYvTpkGcVnmyLpIhvchgt5LFkkdHVWw973XAAekKVZ3/xQJ5FG4NwgHkXL0LLTrgsNOSQ==}
+  openclaw@2026.6.11:
+    resolution: {integrity: sha512-T+P/g19IheeT1ckXMoPN61dYuE8vBF4MderI+kWkvpuFYxPkJxn8AXLpu9IXCnN9g36Acpm9+mMD/V+lsvOkyA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -16715,8 +16715,8 @@ packages:
     resolution: {integrity: sha512-tOG/7GyXpFevhXVh8jOPJrmtRpOTsYqUIkVdVooZYJS/z8WhfQUX8RJILmeuJNinGAMSu1veBr4asSHFt5/hng==}
     engines: {node: '>=18'}
 
-  tar@7.5.15:
-    resolution: {integrity: sha512-dzGK0boVlC4W5QFuQN1EFSl3bIDYsk7Tj40U6eIBnK2k/8ml7TZ5agbI5j5+qnoVcAA+rNtBml8SEiLxZpNqRQ==}
+  tar@7.5.16:
+    resolution: {integrity: sha512-56adEpPMouktRlBLXiaYFFzZ/3+JXa8P9n7WbR+ibIjtviN55mEaOkiysCnPnWm+7kkui1Dn8J9l+g6zV8731w==}
     engines: {node: '>=18'}
 
   teex@1.0.1:
@@ -32427,7 +32427,7 @@ snapshots:
       ws: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 4.4.3
 
-  openclaw@2026.6.8(bufferutil@4.1.0)(utf-8-validate@6.0.6):
+  openclaw@2026.6.11(bufferutil@4.1.0)(utf-8-validate@6.0.6):
     dependencies:
       '@agentclientprotocol/sdk': 0.22.1(zod@4.4.3)
       '@anthropic-ai/sdk': 0.100.1(zod@4.4.3)
@@ -32449,7 +32449,6 @@ snapshots:
       clawpdf: 0.3.0
       commander: 14.0.3
       croner: 10.0.1
-      cross-spawn: 7.0.6
       diff: 8.0.3
       dotenv: 17.4.2
       express: 5.2.1
@@ -32473,7 +32472,7 @@ snapshots:
       qrcode: 1.5.4
       quickjs-wasi: 3.0.0
       rastermill: 0.3.1
-      tar: 7.5.15
+      tar: 7.5.16
       tree-sitter-bash: 0.25.1
       tslog: 4.10.2
       typebox: 1.1.39
@@ -34843,7 +34842,7 @@ snapshots:
       minizlib: 3.1.0
       yallist: 5.0.0
 
-  tar@7.5.15:
+  tar@7.5.16:
     dependencies:
       '@isaacs/fs-minipass': 4.0.1
       chownr: 3.0.0
