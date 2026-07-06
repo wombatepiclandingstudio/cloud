@@ -29,6 +29,7 @@ import { Text } from '@/components/ui/text';
 import { type AgentAttachmentWire } from '@/lib/agent-attachments/use-agent-attachment-upload';
 import { useAppLifecycle } from '@/lib/hooks/use-app-lifecycle';
 import { useAvailableModels } from '@/lib/hooks/use-available-models';
+import { useModelPreferences } from '@/lib/hooks/use-model-preferences';
 import { usePersistedAgentModel } from '@/lib/hooks/use-persisted-agent-model';
 import { useReasoningPreference } from '@/lib/hooks/use-reasoning-preference';
 
@@ -77,6 +78,7 @@ export function SessionDetailContent({ sessionId }: Readonly<SessionDetailConten
 
   const { models: modelOptions } = useAvailableModels(organizationId);
   const { saveModel: savePersistedModel } = usePersistedAgentModel();
+  const { setLastSelected: persistServerLastSelected } = useModelPreferences(organizationId);
   const { defaultExpanded: reasoningDefaultExpanded } = useReasoningPreference();
   const isRemote = sessionType === 'remote';
   const composerModelOptions = useMemo(
@@ -294,6 +296,10 @@ export function SessionDetailContent({ sessionId }: Readonly<SessionDetailConten
                 // persisting it would clobber the real preference.
                 if (modelId !== CLI_MODEL_ID) {
                   savePersistedModel(organizationId, { model: modelId, variant: newVariant });
+                  persistServerLastSelected({
+                    model: modelId,
+                    ...(newVariant ? { variant: newVariant } : {}),
+                  });
                 }
               }}
               organizationId={organizationId}

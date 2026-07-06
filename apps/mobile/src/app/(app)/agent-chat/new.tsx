@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- New-session screen bundles closely related prompt/toolbar/repository concerns in a single component to keep navigation props colocated. */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   type LayoutChangeEvent,
@@ -39,7 +39,8 @@ import {
 } from '@/lib/agent-attachments/use-agent-attachment-upload';
 import { WEB_BASE_URL } from '@/lib/config';
 import { useAvailableModels } from '@/lib/hooks/use-available-models';
-import { contextKey, resolveModelForContext } from '@/lib/hooks/agent-model-preference';
+import { useAutoSelectModel } from '@/lib/hooks/use-auto-select-model';
+import { useModelPreferences } from '@/lib/hooks/use-model-preferences';
 import { usePersistedAgentModel } from '@/lib/hooks/use-persisted-agent-model';
 import { useThemeColors } from '@/lib/hooks/use-theme-colors';
 import { trpcClient, useTRPC } from '@/lib/trpc';
@@ -92,41 +93,18 @@ export default function NewSessionScreen() {
 
   // ── Models ───────────────────────────────────────────────────────
   const { models } = useAvailableModels(organizationId);
-  const {
-    hasLoaded: modelPrefLoaded,
-    stored: storedModelPref,
-    saveModel,
-  } = usePersistedAgentModel();
+  const { setLastSelected: persistServerLastSelected } = useModelPreferences(organizationId);
+  const { saveModel } = usePersistedAgentModel();
+  const autoSelected = useAutoSelectModel(models, organizationId);
   const attachments = useAgentAttachmentUpload({ organizationId });
 
-  // Auto-select first model when models load, preferring the persisted preference
-  const hasAutoSelectedModel = useRef(false);
-  useEffect(() => {
-    if (hasAutoSelectedModel.current) {
-      return;
-    }
-    // Never overwrite a model the user already picked manually.
-    if (model) {
-      hasAutoSelectedModel.current = true;
-      return;
-    }
-    if (models.length === 0 || !modelPrefLoaded) {
-      return;
-    }
-
-    const persisted = resolveModelForContext(storedModelPref, contextKey(organizationId), models);
-    if (persisted) {
-      setModel(persisted.model);
-      setVariant(persisted.variant);
-    } else {
-      const firstModel = models[0];
-      if (firstModel) {
-        setModel(firstModel.id);
-        setVariant(firstModel.variants[0] ?? '');
-      }
-    }
-    hasAutoSelectedModel.current = true;
-  }, [models, modelPrefLoaded, storedModelPref, organizationId, model]);
+  // Apply auto-selected model when the user hasn't picked one yet.
+  const hasAppliedAutoSelection = useRef(false);
+  if (!hasAppliedAutoSelection.current && autoSelected.model && !model) {
+    hasAppliedAutoSelection.current = true;
+    setModel(autoSelected.model);
+    setVariant(autoSelected.variant);
+  }
 
   // ── Repositories ─────────────────────────────────────────────────
   const trpc = useTRPC();
@@ -168,8 +146,9 @@ export default function NewSessionScreen() {
       setModel(modelId);
       setVariant(newVariant);
       saveModel(organizationId, { model: modelId, variant: newVariant });
+      persistServerLastSelected({ model: modelId, ...(newVariant ? { variant: newVariant } : {}) });
     },
-    [organizationId, saveModel]
+    [organizationId, saveModel, persistServerLastSelected]
   );
 
   const handleOpenGitHubIntegration = useCallback(async () => {
