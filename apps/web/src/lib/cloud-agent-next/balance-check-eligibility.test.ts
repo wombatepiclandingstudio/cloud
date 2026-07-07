@@ -23,7 +23,7 @@ const fakeDb = {} as never;
 const fakeUser = { id: 'user-1' };
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
   mockIsFreeModel.mockResolvedValue(false);
   mockGetModelUserByokProviders.mockResolvedValue([]);
   mockGetUserByokProviderIds.mockResolvedValue([]);
