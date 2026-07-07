@@ -11,4 +11,5 @@ export const ENV_KEYS = {
   eventServiceUrl: 'EVENT_SERVICE_URL',
   notificationsUrl: 'NOTIFICATIONS_URL',
   pylonAppId: 'PYLON_APP_ID',
+  posthogApiKey: 'POSTHOG_API_KEY',
 };
