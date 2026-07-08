@@ -163,6 +163,7 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
     : personalEligibilityQuery.isPending;
   const hasInsufficientBalance =
     !isEligibilityLoading && eligibilityData && !eligibilityData.isEligible;
+  const hasLimitedAccess = !isEligibilityLoading && eligibilityData?.accessLevel === 'limited';
 
   // ---------------------------------------------------------------------------
   // Models
@@ -174,20 +175,19 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
 
   const allModels = modelsData?.data || [];
 
-  const modelOptions = useMemo<ModelOption[]>(
-    () =>
-      appendCloudAgentNextLocalTestModel(
-        allModels.map(model => ({
-          id: model.id,
-          name: model.name,
-          isFree: model.isFree,
-          mayTrainOnYourPrompts: model.mayTrainOnYourPrompts,
-          hasUserByokAvailable: model.hasUserByokAvailable,
-          variants: model.opencode?.variants ? Object.keys(model.opencode.variants) : undefined,
-        }))
-      ),
-    [allModels]
-  );
+  const modelOptions = useMemo<ModelOption[]>(() => {
+    const options = allModels.map(model => ({
+      id: model.id,
+      name: model.name,
+      isFree: model.isFree,
+      mayTrainOnYourPrompts: model.mayTrainOnYourPrompts,
+      hasUserByokAvailable: model.hasUserByokAvailable,
+      variants: model.opencode?.variants ? Object.keys(model.opencode.variants) : undefined,
+    }));
+    const withLocalTest = appendCloudAgentNextLocalTestModel(options);
+    if (!hasLimitedAccess) return withLocalTest;
+    return withLocalTest.filter(option => option.isFree || option.hasUserByokAvailable);
+  }, [allModels, hasLimitedAccess]);
 
   // ---------------------------------------------------------------------------
   // Form state
@@ -888,12 +888,21 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
   // ---------------------------------------------------------------------------
   const isPromptTooLong = prompt.length > CLOUD_AGENT_PROMPT_MAX_LENGTH;
 
+  const selectedModelOption = modelOptions.find(m => m.id === model);
+  // Limited-access users can submit when they've picked a free or BYOK-capable
+  // model from the filtered picker; the server still gates paid models behind
+  // the minimum balance, but the submit button shouldn't pretend otherwise.
+  const limitedAccessModelIsAllowed =
+    hasLimitedAccess &&
+    !!selectedModelOption &&
+    (selectedModelOption.isFree || selectedModelOption.hasUserByokAvailable);
+
   const isFormValid =
     prompt.trim().length > 0 &&
     !isPromptTooLong &&
     model.length > 0 &&
     !isPreparing &&
-    !hasInsufficientBalance &&
+    (!hasInsufficientBalance || limitedAccessModelIsAllowed) &&
     !attachmentUpload.hasUploadingAttachments;
 
   const handleStartSession = useCallback(async () => {
@@ -1174,11 +1183,27 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
       <MobileSidebarToggle />
       <div className="w-full max-w-2xl space-y-4">
         {/* Insufficient balance banner */}
-        {hasInsufficientBalance && eligibilityData && (
+        {hasInsufficientBalance && eligibilityData && !hasLimitedAccess && (
           <InsufficientBalanceBanner
             balance={eligibilityData.balance}
             organizationId={organizationId}
             content={{ type: 'productName', productName: 'Cloud Agent' }}
+          />
+        )}
+
+        {/* Free-models-available banner when balance is low but free models are usable */}
+        {hasLimitedAccess && eligibilityData && (
+          <InsufficientBalanceBanner
+            balance={eligibilityData.balance}
+            organizationId={organizationId}
+            colorScheme="info"
+            content={{
+              type: 'custom',
+              title: 'Free Models Available',
+              description:
+                'You can use free models in Cloud Agent. Add credits to unlock all models.',
+              compactActionText: 'Add credits to unlock all models',
+            }}
           />
         )}
 
