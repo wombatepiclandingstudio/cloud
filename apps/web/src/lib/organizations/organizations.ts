@@ -692,6 +692,7 @@ export async function acceptOrganizationInvite(
         .select({
           email: kilocode_users.google_user_email,
           normalizedEmail: kilocode_users.normalized_email,
+          createdAt: kilocode_users.created_at,
         })
         .from(kilocode_users)
         .where(eq(kilocode_users.id, userId))
@@ -780,6 +781,19 @@ export async function acceptOrganizationInvite(
         role: invitation.role,
         invited_by: invitation.invited_by,
       });
+
+      // If the invitation predates the account, the account was created after
+      // (i.e. because of) a pending invite: this is a brand-new user joining an
+      // organization via invite, so disable their personal account. Existing
+      // users — whose account predates the invitation — keep their value.
+      const accountCreatedForInvite =
+        new Date(invitation.created_at).getTime() < new Date(acceptingUser.createdAt).getTime();
+      if (accountCreatedForInvite) {
+        await tx
+          .update(kilocode_users)
+          .set({ personal_account_disabled: true })
+          .where(eq(kilocode_users.id, userId));
+      }
 
       // Clear any previous removal record so the user isn't treated as "removed"
       // by subsequent webhook events (Subscription Lifecycle 2)

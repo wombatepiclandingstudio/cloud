@@ -7,6 +7,7 @@ import {
   organization_membership_removals,
   organization_seats_purchases,
   organization_user_limits,
+  kilocode_users,
 } from '@kilocode/db/schema';
 import { insertTestUser } from '@/tests/helpers/user.helper';
 import { eq, and } from 'drizzle-orm';
@@ -1595,6 +1596,55 @@ describe('Organizations', () => {
         });
         expect(storedInvitation?.accepted_at).toBeDefined();
         expect(storedInvitation?.accepted_at).not.toBeNull();
+      });
+
+      test('disables the personal account when the account was created after the invite', async () => {
+        const owner = await insertTestUser();
+        const invitee = await insertTestUser();
+        const organization = await createOrganization('Test Org', owner.id);
+
+        const invitation = await inviteUserToOrganization(
+          organization.id,
+          owner.id,
+          invitee.google_user_email,
+          'member'
+        );
+        // Simulate a brand-new account created to accept an already-pending invite.
+        await db
+          .update(organization_invitations)
+          .set({ created_at: sql`NOW() - INTERVAL '1 hour'` })
+          .where(eq(organization_invitations.id, invitation.id));
+
+        const result = await acceptOrganizationInvite(invitee.id, invitation.token);
+        expect(result.success).toBe(true);
+
+        const updatedInvitee = await db.query.kilocode_users.findFirst({
+          where: eq(kilocode_users.id, invitee.id),
+        });
+        expect(updatedInvitee?.personal_account_disabled).toBe(true);
+      });
+
+      test('leaves the personal account untouched when the account predates the invite', async () => {
+        const owner = await insertTestUser();
+        const invitee = await insertTestUser();
+        const organization = await createOrganization('Test Org', owner.id);
+
+        // The invitation is created after the invitee's account, matching an
+        // existing user who is later invited to an organization.
+        const invitation = await inviteUserToOrganization(
+          organization.id,
+          owner.id,
+          invitee.google_user_email,
+          'member'
+        );
+
+        const result = await acceptOrganizationInvite(invitee.id, invitation.token);
+        expect(result.success).toBe(true);
+
+        const updatedInvitee = await db.query.kilocode_users.findFirst({
+          where: eq(kilocode_users.id, invitee.id),
+        });
+        expect(updatedInvitee?.personal_account_disabled).toBe(false);
       });
 
       test('rejects accepting a pre-existing invitation into a child organization', async () => {
