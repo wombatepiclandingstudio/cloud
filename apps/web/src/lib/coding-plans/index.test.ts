@@ -4,6 +4,7 @@ import type { CaptureCostInsightSpendInput } from '@kilocode/db/cost-insights-ro
 
 import { encryptApiKey } from '@/lib/ai-gateway/byok/encryption';
 import { BYOK_ENCRYPTION_KEY } from '@/lib/config.server';
+import { codingPlanCredentialFingerprint } from '@/lib/coding-plans/credential-fingerprint';
 import {
   cancelCodingPlanSubscription,
   getKeyInventoryCounts,
@@ -16,6 +17,7 @@ import {
   markCredentialManuallyRevoked,
   markCredentialManualRevocationFailed,
   requeueManualCredentialRevocation,
+  replaceManualCredentialRevocation,
 } from '@/lib/coding-plans/revocation';
 import { db } from '@/lib/drizzle';
 import { insertTestUser } from '@/tests/helpers/user.helper';
@@ -538,7 +540,7 @@ describe('coding plans', () => {
     ]);
   });
 
-  it('clears credential material once revocation work starts and records completion by plan ID', async () => {
+  it('clears credential material once revocation work starts and can remove stock permanently', async () => {
     const user = await createUserWithBalance(COST_MICRODOLLARS);
     await uploadKeysToInventory(
       PROVIDER_ID,
@@ -571,6 +573,114 @@ describe('coding plans', () => {
     expect(credential.upstream_plan_id).toBe('minimax-revoke-plan');
     expect(credential.encrypted_api_key).toBeNull();
     expect(credential.revocation_attempt_count).toBe(1);
+  });
+
+  it('validates and stores a replacement credential for the same upstream plan ID', async () => {
+    const user = await createUserWithBalance(COST_MICRODOLLARS);
+    const validateCredential = jest.fn(async () => true);
+    await uploadKeysToInventory(
+      PROVIDER_ID,
+      PLAN_ID,
+      [inventoryEntry('replace-original-key', 'minimax-replace-plan')],
+      validatedInventoryUpload
+    );
+    const activation = await subscribeToCodingPlan(user.id, PLAN_ID, 'replace-success');
+    const [subscription] = await db
+      .select()
+      .from(coding_plan_subscriptions)
+      .where(eq(coding_plan_subscriptions.id, activation.subscriptionId));
+    await terminateCodingPlanImmediately(activation.subscriptionId);
+
+    await replaceManualCredentialRevocation(subscription.key_inventory_id!, ' replace-new-key ', {
+      validateCredential,
+    });
+    const [credential] = await db
+      .select()
+      .from(coding_plan_key_inventory)
+      .where(eq(coding_plan_key_inventory.id, subscription.key_inventory_id!));
+
+    expect(validateCredential).toHaveBeenCalledWith({
+      apiKey: 'replace-new-key',
+      planId: PLAN_ID,
+      upstreamPlanId: 'minimax-replace-plan',
+    });
+    expect(credential.status).toBe('available');
+    expect(credential.upstream_plan_id).toBe('minimax-replace-plan');
+    expect(credential.encrypted_api_key).not.toBeNull();
+    expect(credential.assigned_to_user_id).toBeNull();
+    expect(credential.revocation_requested_at).toBeNull();
+    expect(credential.revocation_attempt_count).toBe(1);
+    expect(await getKeyInventoryCounts(PLAN_ID)).toEqual([
+      { providerId: PROVIDER_ID, planId: PLAN_ID, status: 'available', count: 1 },
+    ]);
+  });
+
+  it('rejects invalid replacement credentials before returning stock to inventory', async () => {
+    const user = await createUserWithBalance(COST_MICRODOLLARS);
+    await seedInventoryKey('replace-invalid-original-key');
+    const activation = await subscribeToCodingPlan(user.id, PLAN_ID, 'replace-invalid');
+    const [subscription] = await db
+      .select()
+      .from(coding_plan_subscriptions)
+      .where(eq(coding_plan_subscriptions.id, activation.subscriptionId));
+    await terminateCodingPlanImmediately(activation.subscriptionId);
+
+    await expect(
+      replaceManualCredentialRevocation(subscription.key_inventory_id!, 'replace-invalid-key', {
+        validateCredential: async () => false,
+      })
+    ).rejects.toThrow('failed validation');
+    const [credential] = await db
+      .select()
+      .from(coding_plan_key_inventory)
+      .where(eq(coding_plan_key_inventory.id, subscription.key_inventory_id!));
+    expect(credential.status).toBe('revocation_pending');
+    expect(credential.encrypted_api_key).toBeNull();
+  });
+
+  it('rejects unchanged and duplicate replacement credentials before validating upstream', async () => {
+    const user = await createUserWithBalance(COST_MICRODOLLARS);
+    const validateCredential = jest.fn(async () => true);
+    await uploadKeysToInventory(
+      PROVIDER_ID,
+      PLAN_ID,
+      [
+        inventoryEntry('replace-unchanged-original-key', 'minimax-replace-unchanged-plan'),
+        inventoryEntry('replace-duplicate-existing-key', 'minimax-replace-duplicate-plan'),
+      ],
+      validatedInventoryUpload
+    );
+    const activation = await subscribeToCodingPlan(user.id, PLAN_ID, 'replace-unchanged');
+    const [subscription] = await db
+      .select()
+      .from(coding_plan_subscriptions)
+      .where(eq(coding_plan_subscriptions.id, activation.subscriptionId));
+    await terminateCodingPlanImmediately(activation.subscriptionId);
+
+    await expect(
+      replaceManualCredentialRevocation(
+        subscription.key_inventory_id!,
+        'replace-unchanged-original-key',
+        { validateCredential }
+      )
+    ).rejects.toThrow('must be different');
+    await expect(
+      replaceManualCredentialRevocation(
+        subscription.key_inventory_id!,
+        'replace-duplicate-existing-key',
+        { validateCredential }
+      )
+    ).rejects.toThrow('already present');
+
+    const [credential] = await db
+      .select()
+      .from(coding_plan_key_inventory)
+      .where(eq(coding_plan_key_inventory.id, subscription.key_inventory_id!));
+    expect(credential.status).toBe('revocation_pending');
+    expect(credential.credential_fingerprint).toBe(
+      codingPlanCredentialFingerprint('replace-unchanged-original-key')
+    );
+    expect(validateCredential).not.toHaveBeenCalled();
   });
 
   it('keeps failed manual revocation terminal and retryable', async () => {
