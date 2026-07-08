@@ -29,6 +29,50 @@ function isSyntheticKiloEvent(event: KiloEvent): boolean {
   return event.type === 'server.connected' || event.type === 'server.heartbeat';
 }
 
+/**
+ * Codes raised by fetch when the server process cannot be reached — Node/undici
+ * errno strings plus Bun's fetch codes, which have no errno equivalent.
+ */
+const CONNECTION_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EPIPE',
+  'ConnectionRefused',
+  'ConnectionClosed',
+  'FailedToOpenSocket',
+]);
+
+/** Transport-failure texts from fetch implementations that set no code. */
+const UNREACHABLE_ERROR_PATTERN = /econnrefused|econnreset|fetch failed|unable to connect/i;
+
+/** Bound on `cause` traversal, in case a chain is cyclic. */
+const MAX_CAUSE_DEPTH = 5;
+
+/**
+ * True when a WrapperKiloClient call failed because the kilo server process
+ * itself is gone (crashed, OOM-killed) rather than because it returned an
+ * application-level error. Distinguishing the two matters: app-level errors
+ * (bad session id, invalid model) must not trigger a runtime restart, but a
+ * dead server should — see MEMORY_CGROUPS_PLAN.md (W5).
+ *
+ * Wrapper errors carry the original SDK failure as `cause`: an Error instance
+ * when the transport failed, or the parsed response body (not an Error) when a
+ * live server answered with an application error. Codes are checked at every
+ * level of the chain, but the message pattern applies only to a leaf Error:
+ * composed wrapper messages embed application text, and a live server relaying
+ * an upstream failure may legitimately say "fetch failed" in its error body.
+ */
+export function isKiloServerUnreachableError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth++) {
+    const code = (current as NodeJS.ErrnoException).code;
+    if (code !== undefined && CONNECTION_ERROR_CODES.has(code)) return true;
+    if (current.cause === undefined) return UNREACHABLE_ERROR_PATTERN.test(current.message);
+    current = current.cause;
+  }
+  return false;
+}
+
 async function* globalFeedPayloads(
   stream: AsyncIterable<unknown>,
   workspacePath: string
@@ -118,7 +162,9 @@ function formatSdkError(error: unknown): string {
 
 function requireSdkData<T>(result: { data?: T; error?: unknown }, operation: string): T {
   if (result.error !== undefined) {
-    throw new Error(`${operation} failed: ${formatSdkError(result.error)}`);
+    throw new Error(`${operation} failed: ${formatSdkError(result.error)}`, {
+      cause: result.error,
+    });
   }
 
   if (result.data === undefined) {
@@ -339,7 +385,8 @@ export function createWrapperKiloClient(
       });
       if (result.error !== undefined) {
         throw new Error(
-          `Async prompt for session ${opts.sessionId} failed: ${formatSdkError(result.error)}`
+          `Async prompt for session ${opts.sessionId} failed: ${formatSdkError(result.error)}`,
+          { cause: result.error }
         );
       }
     },
@@ -358,7 +405,8 @@ export function createWrapperKiloClient(
       });
       if (result.error !== undefined) {
         throw new Error(
-          `Session summarize for ${opts.sessionId} failed: ${formatSdkError(result.error)}`
+          `Session summarize for ${opts.sessionId} failed: ${formatSdkError(result.error)}`,
+          { cause: result.error }
         );
       }
       return result.data ?? true;
@@ -376,7 +424,8 @@ export function createWrapperKiloClient(
       });
       if (result.error !== undefined) {
         throw new Error(
-          `Command for session ${opts.sessionId} failed: ${formatSdkError(result.error)}`
+          `Command for session ${opts.sessionId} failed: ${formatSdkError(result.error)}`,
+          { cause: result.error }
         );
       }
       return result.data;
