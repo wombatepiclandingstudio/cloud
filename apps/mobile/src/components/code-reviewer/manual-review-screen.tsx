@@ -5,11 +5,18 @@ import { useRef, useState } from 'react';
 import { Pressable, ScrollView, TextInput, View } from 'react-native';
 import { toast } from 'sonner-native';
 
+import { ModelSelector } from '@/components/agents/model-selector';
 import { ScreenHeader } from '@/components/screen-header';
 import { Button } from '@/components/ui/button';
 import { Text } from '@/components/ui/text';
 import { PLATFORM_CAPABILITIES } from '@/lib/code-reviewer-config';
-import { useReviewConfig } from '@/lib/hooks/use-code-reviewer';
+import { useAvailableModels } from '@/lib/hooks/use-available-models';
+import {
+  PERSONAL_SCOPE,
+  useGitHubStatus,
+  useGitLabStatus,
+  useReviewConfig,
+} from '@/lib/hooks/use-code-reviewer';
 import { useCreateManualReview } from '@/lib/hooks/use-code-reviews';
 import { useThemeColors } from '@/lib/hooks/use-theme-colors';
 import { cn } from '@/lib/utils';
@@ -30,11 +37,26 @@ const URL_PATTERN: Record<ManualReviewPlatform, RegExp> = {
 export function ManualReviewScreen({ scope }: Readonly<{ scope: string }>) {
   const router = useRouter();
   const colors = useThemeColors();
-  const [platform, setPlatform] = useState<ManualReviewPlatform>('github');
+  const githubStatus = useGitHubStatus(scope);
+  const gitlabStatus = useGitLabStatus(scope);
+  const statusFor = { github: githubStatus, gitlab: gitlabStatus };
+  const isConnected = (option: ManualReviewPlatform) => statusFor[option].data?.connected === true;
+  const firstConnected = MANUAL_REVIEW_PLATFORMS.find(option => isConnected(option));
+  const [platformChoice, setPlatformChoice] = useState<ManualReviewPlatform | null>(null);
+  const platform = platformChoice ?? firstConnected ?? 'github';
   const urlRef = useRef('');
   const instructionsRef = useRef('');
   const config = useReviewConfig(scope, platform);
   const createReview = useCreateManualReview(scope);
+  const { models } = useAvailableModels(scope === PERSONAL_SCOPE ? undefined : scope);
+  const [modelChoice, setModelChoice] = useState<{
+    modelSlug: string;
+    thinkingEffort: string | null;
+  } | null>(null);
+  const effectiveModel = modelChoice ?? {
+    modelSlug: config.data?.modelSlug ?? '',
+    thinkingEffort: config.data?.thinkingEffort ?? null,
+  };
 
   const onSubmit = () => {
     const url = urlRef.current.trim();
@@ -49,8 +71,8 @@ export function ManualReviewScreen({ scope }: Readonly<{ scope: string }>) {
       {
         platform,
         url,
-        modelSlug: config.data.modelSlug,
-        thinkingEffort: config.data.thinkingEffort,
+        modelSlug: effectiveModel.modelSlug,
+        thinkingEffort: effectiveModel.thinkingEffort,
         instructions: instructionsRef.current.trim() || undefined,
       },
       {
@@ -78,23 +100,41 @@ export function ManualReviewScreen({ scope }: Readonly<{ scope: string }>) {
             Platform
           </Text>
           <View className="overflow-hidden rounded-lg bg-secondary">
-            {MANUAL_REVIEW_PLATFORMS.map((option, index) => (
-              <Pressable
-                key={option}
-                className={cn(
-                  'flex-row items-center justify-between px-4 py-3 active:opacity-70',
-                  index < MANUAL_REVIEW_PLATFORMS.length - 1 && 'border-b-[0.5px] border-hair-soft'
-                )}
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  urlRef.current = '';
-                  setPlatform(option);
-                }}
-              >
-                <Text className="text-sm font-medium">{PLATFORM_CAPABILITIES[option].label}</Text>
-                {platform === option ? <Check size={18} color={colors.foreground} /> : null}
-              </Pressable>
-            ))}
+            {MANUAL_REVIEW_PLATFORMS.map((option, index) => {
+              const connected = isConnected(option);
+              return (
+                <Pressable
+                  key={option}
+                  disabled={!connected}
+                  className={cn(
+                    'flex-row items-center justify-between px-4 py-3 active:opacity-70',
+                    index < MANUAL_REVIEW_PLATFORMS.length - 1 &&
+                      'border-b-[0.5px] border-hair-soft',
+                    !connected && 'opacity-50'
+                  )}
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    urlRef.current = '';
+                    setPlatformChoice(option);
+                  }}
+                >
+                  <View>
+                    <Text className="text-sm font-medium">
+                      {PLATFORM_CAPABILITIES[option].label}
+                    </Text>
+                    {!connected && (
+                      <Text variant="muted" className="text-xs">
+                        Not connected
+                      </Text>
+                    )}
+                  </View>
+                  <Check
+                    size={18}
+                    color={platform === option ? colors.foreground : 'transparent'}
+                  />
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 
@@ -132,12 +172,24 @@ export function ManualReviewScreen({ scope }: Readonly<{ scope: string }>) {
           />
         </View>
 
-        {/* Manual jobs reuse the platform config's model; add a picker if someone asks for one. */}
-        <Text variant="muted" className="text-xs">
-          Model: {config.data?.modelSlug ?? '…'}
-        </Text>
+        <View className="gap-3">
+          <Text variant="small" className="uppercase tracking-wide text-muted-foreground">
+            Model
+          </Text>
+          <ModelSelector
+            options={models}
+            value={effectiveModel.modelSlug}
+            variant={effectiveModel.thinkingEffort ?? ''}
+            onSelect={(modelId, variant) => {
+              setModelChoice({ modelSlug: modelId, thinkingEffort: variant || null });
+            }}
+          />
+        </View>
 
-        <Button disabled={createReview.isPending || !config.data} onPress={onSubmit}>
+        <Button
+          disabled={createReview.isPending || !config.data || !isConnected(platform)}
+          onPress={onSubmit}
+        >
           <Text>Start review</Text>
         </Button>
       </ScrollView>
