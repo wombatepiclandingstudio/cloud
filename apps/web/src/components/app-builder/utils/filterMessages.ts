@@ -175,7 +175,7 @@ type RoleChecker<T> = (msg: T) => 'user' | 'assistant' | 'system';
 /**
  * Find the index of the last user-role message in the array, or -1 if none.
  */
-function lastUserIndex<T>(messages: T[], isUser: RoleChecker<T>): number {
+export function lastUserIndex<T>(messages: T[], isUser: RoleChecker<T>): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (isUser(messages[i]) === 'user') return i;
   }

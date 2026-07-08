@@ -8,9 +8,14 @@ import {
   loadEarlierUserTurn,
   paginateMessages,
   getMessageRole,
+  lastUserIndex,
 } from './filterMessages';
 
-function msg(ts: number, type: 'user' | 'assistant' | 'system', say?: string): CloudMessage {
+function msg(
+  ts: number,
+  type: 'user' | 'assistant' | 'system',
+  say?: string
+): CloudMessage {
   return {
     ts,
     type,
@@ -49,6 +54,21 @@ describe('tailFromLastUserTurn', () => {
     ];
     const result = tailFromLastUserTurn(messages);
     expect(result.visibleMessages).toEqual(messages.slice(2));
+    expect(result.hasEarlierMessages).toBe(true);
+  });
+
+  it('re-anchors to a newly appended user turn', () => {
+    // Simulates the optimistic user message landing mid-conversation:
+    // the previous turn is complete, then a brand-new user message is appended
+    // before any assistant reply exists yet. The tail should be exactly that
+    // new user message, not a stale mix of the previous tail.
+    const messages = [
+      userMsg(1),
+      msg(2, 'assistant'),
+      userMsg(3), // new turn (optimistic)
+    ];
+    const result = tailFromLastUserTurn(messages);
+    expect(result.visibleMessages).toEqual([userMsg(3)]);
     expect(result.hasEarlierMessages).toBe(true);
   });
 
@@ -94,6 +114,25 @@ describe('loadEarlierUserTurn', () => {
     const result = loadEarlierUserTurn(messages, 2);
     expect(result.visibleCount).toBe(messages.length);
     expect(result.hasEarlierMessages).toBe(false);
+  });
+});
+
+describe('lastUserIndex', () => {
+  it('returns -1 when no user message exists', () => {
+    expect(lastUserIndex([msg(1, 'assistant'), msg(2, 'system')], getMessageRole)).toBe(-1);
+  });
+
+  it('returns the index of the last user message', () => {
+    const messages = [userMsg(1), msg(2, 'assistant'), userMsg(3), msg(4, 'assistant')];
+    expect(lastUserIndex(messages, getMessageRole)).toBe(2);
+  });
+
+  it('treats user_feedback as user', () => {
+    const messages = [
+      msg(1, 'assistant'),
+      { ts: 2, type: 'user', say: 'user_feedback' } as CloudMessage,
+    ];
+    expect(lastUserIndex(messages, getMessageRole)).toBe(1);
   });
 });
 

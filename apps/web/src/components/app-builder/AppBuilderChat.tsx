@@ -43,6 +43,7 @@ import {
   DEFAULT_VISIBLE_SESSIONS,
   tailFromLastUserTurn,
   loadEarlierUserTurn,
+  lastUserIndex,
 } from './utils/filterMessages';
 import { PromptInput } from '@/components/app-builder/PromptInput';
 import { useProject } from './ProjectSession';
@@ -378,20 +379,33 @@ function V2SessionMessages({
   const getRole = useCallback((m: StoredMessage) => m.info.role, []);
 
   // Visible window = last N messages. Initialized to "from the last user
-  // turn to the end" so the user lands on the latest exchange. Re-anchored
-  // to the current tail whenever the active session id changes.
+  // turn to the end" so the user lands on the latest exchange.
   const [visibleCount, setVisibleCount] = useState(
     () => tailFromLastUserTurn(sessionState.messages, getRole).visibleMessages.length
   );
 
-  useEffect(() => {
-    setVisibleCount(tailFromLastUserTurn(sessionState.messages, getRole).visibleMessages.length);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.info.id]);
+  // Track the id of the tail-most user message. When it changes, a new user
+  // turn has been appended (e.g. the optimistic user message on send), so
+  // re-anchor the window to that new turn. Otherwise just clamp the window
+  // if the message list shrank below it.
+  const lastUserMsgIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setVisibleCount(prev => Math.min(prev, sessionState.messages.length));
-  }, [sessionState.messages.length]);
+    const messages = sessionState.messages;
+    if (messages.length === 0) {
+      lastUserMsgIdRef.current = null;
+      setVisibleCount(0);
+      return;
+    }
+    const lastIdx = lastUserIndex(messages, getRole);
+    const currentLastUserId = lastIdx >= 0 ? messages[lastIdx].info.id : null;
+    if (currentLastUserId !== null && currentLastUserId !== lastUserMsgIdRef.current) {
+      lastUserMsgIdRef.current = currentLastUserId;
+      setVisibleCount(messages.length - lastIdx);
+      return;
+    }
+    setVisibleCount(prev => (prev > messages.length ? messages.length : prev));
+  }, [sessionState.messages, getRole]);
 
   const handleLoadEarlier = useCallback(() => {
     setVisibleCount(prev => loadEarlierUserTurn(sessionState.messages, prev, getRole).visibleCount);
