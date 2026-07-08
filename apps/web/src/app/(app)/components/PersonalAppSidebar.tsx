@@ -9,7 +9,6 @@ import {
   Coins,
   Receipt,
   User,
-  UserCog,
   Building2,
   Plus,
   Rocket,
@@ -20,8 +19,6 @@ import {
   List,
   Shield,
   ListChecks,
-  Download,
-  BookOpen,
   Key,
   Wrench,
   Webhook,
@@ -276,33 +273,9 @@ export default function PersonalAppSidebar(props: React.ComponentProps<typeof Si
       url: '/credits',
     },
     {
-      title: 'Connected Accounts',
-      icon: UserCog,
-      url: '/connected-accounts',
-    },
-    {
       title: 'Bring Your Own Key (BYOK)',
       icon: Key,
       url: '/byok',
-    },
-  ];
-
-  // Start group
-  const startItems: Array<{
-    title: string;
-    icon: React.ElementType;
-    url: string;
-    className?: string;
-  }> = [
-    {
-      title: 'Install',
-      icon: Download,
-      url: '/install',
-    },
-    {
-      title: 'Learn',
-      icon: BookOpen,
-      url: '/learn',
     },
   ];
 
@@ -369,7 +342,6 @@ export default function PersonalAppSidebar(props: React.ComponentProps<typeof Si
     ...kiloClawItems,
     ...cloudItems,
     ...accountItems,
-    ...startItems,
   ].map(i => (typeof i === 'string' ? i : i.url));
 
   return (
@@ -399,7 +371,6 @@ export default function PersonalAppSidebar(props: React.ComponentProps<typeof Si
               <SidebarMenuList label="Cloud" items={cloudItems} allUrls={allUrls} />
             )}
             <SidebarMenuList label="Account" items={accountItems} allUrls={allUrls} />
-            <SidebarMenuList label="Start" items={startItems} allUrls={allUrls} />
           </>
         )}
       </SidebarContent>
