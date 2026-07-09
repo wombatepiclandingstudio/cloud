@@ -11,11 +11,7 @@ import {
   lastUserIndex,
 } from './filterMessages';
 
-function msg(
-  ts: number,
-  type: 'user' | 'assistant' | 'system',
-  say?: string
-): CloudMessage {
+function msg(ts: number, type: 'user' | 'assistant' | 'system', say?: string): CloudMessage {
   return {
     ts,
     type,

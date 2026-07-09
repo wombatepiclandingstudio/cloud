@@ -386,8 +386,10 @@ function V2SessionMessages({
 
   // Track the id of the tail-most user message. When it changes, a new user
   // turn has been appended (e.g. the optimistic user message on send), so
-  // re-anchor the window to that new turn. Otherwise just clamp the window
-  // if the message list shrank below it.
+  // re-anchor the window to that new turn. Otherwise grow the window along
+  // with the streaming assistant reply (clamped to messages.length and
+  // never below the natural tail), so the user's prompt and earlier chunks
+  // of the current turn stay in view.
   const lastUserMsgIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -404,7 +406,7 @@ function V2SessionMessages({
       setVisibleCount(messages.length - lastIdx);
       return;
     }
-    setVisibleCount(prev => (prev > messages.length ? messages.length : prev));
+    setVisibleCount(prev => Math.min(messages.length, Math.max(prev, messages.length - lastIdx)));
   }, [sessionState.messages, getRole]);
 
   const handleLoadEarlier = useCallback(() => {
