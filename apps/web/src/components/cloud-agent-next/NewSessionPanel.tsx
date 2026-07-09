@@ -62,6 +62,7 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { LinkButton } from '@/components/Button';
 import { cn } from '@/lib/utils';
+import { useModelPreferences } from '@/lib/hooks/use-model-preferences';
 import type { SlashCommand } from '@/lib/cloud-agent/slash-commands';
 import {
   extractRepoFromGitUrl,
@@ -162,29 +163,31 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
     : personalEligibilityQuery.isPending;
   const hasInsufficientBalance =
     !isEligibilityLoading && eligibilityData && !eligibilityData.isEligible;
+  const hasLimitedAccess = !isEligibilityLoading && eligibilityData?.accessLevel === 'limited';
 
   // ---------------------------------------------------------------------------
   // Models
   // ---------------------------------------------------------------------------
   const { data: modelsData } = useModelSelectorList(organizationId);
+  const { lastSelected: serverLastSelected, setLastSelected: persistServerLastSelected } =
+    useModelPreferences(organizationId);
   const { data: defaultsData } = useOrganizationDefaults(organizationId);
 
   const allModels = modelsData?.data || [];
 
-  const modelOptions = useMemo<ModelOption[]>(
-    () =>
-      appendCloudAgentNextLocalTestModel(
-        allModels.map(model => ({
-          id: model.id,
-          name: model.name,
-          isFree: model.isFree,
-          mayTrainOnYourPrompts: model.mayTrainOnYourPrompts,
-          hasUserByokAvailable: model.hasUserByokAvailable,
-          variants: model.opencode?.variants ? Object.keys(model.opencode.variants) : undefined,
-        }))
-      ),
-    [allModels]
-  );
+  const modelOptions = useMemo<ModelOption[]>(() => {
+    const options = allModels.map(model => ({
+      id: model.id,
+      name: model.name,
+      isFree: model.isFree,
+      mayTrainOnYourPrompts: model.mayTrainOnYourPrompts,
+      hasUserByokAvailable: model.hasUserByokAvailable,
+      variants: model.opencode?.variants ? Object.keys(model.opencode.variants) : undefined,
+    }));
+    const withLocalTest = appendCloudAgentNextLocalTestModel(options);
+    if (!hasLimitedAccess) return withLocalTest;
+    return withLocalTest.filter(option => option.isFree || option.hasUserByokAvailable);
+  }, [allModels, hasLimitedAccess]);
 
   // ---------------------------------------------------------------------------
   // Form state
@@ -276,33 +279,45 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
 
     const isCurrentModelAvailable = modelOptions.some(m => m.id === model);
     if (!isCurrentModelAvailable || !model || !isModelUserSelected) {
+      const serverLastModelId = serverLastSelected?.model;
       const newModel = getPreferredInitialModel({
         modelOptions,
-        lastUsedModel: getLastUsedModel(organizationId),
+        lastUsedModel: serverLastModelId ?? getLastUsedModel(organizationId),
         defaultModel: defaultsData?.defaultModel,
       });
 
       if (newModel && newModel !== model) {
         setModel(newModel);
         setIsModelUserSelected(false);
-        // Restore the last-used variant for this model, otherwise fall back to the first
+        // Restore the server-synced variant when seeding the server's model,
+        // then the last-used variant, otherwise fall back to the first
         // available variant (typically "none").
+        const serverVariant =
+          newModel === serverLastSelected?.model ? serverLastSelected.variant : undefined;
         const newVariants = modelOptions.find(m => m.id === newModel)?.variants ?? [];
         setVariant(
           getPreferredInitialVariant({
             availableVariants: newVariants,
-            lastUsedVariant: getLastUsedVariant(newModel, organizationId),
+            lastUsedVariant: serverVariant ?? getLastUsedVariant(newModel, organizationId),
           })
         );
       }
     }
-  }, [defaultsData?.defaultModel, modelOptions, model, isModelUserSelected, organizationId]);
+  }, [
+    defaultsData?.defaultModel,
+    modelOptions,
+    model,
+    isModelUserSelected,
+    organizationId,
+    serverLastSelected,
+  ]);
 
   const handleModelChange = useCallback(
     (newModel: string) => {
       setModel(newModel);
       setIsModelUserSelected(true);
       setLastUsedModel(newModel, organizationId);
+      persistServerLastSelected({ model: newModel });
       const newVariants = modelOptions.find(m => m.id === newModel)?.variants ?? [];
       setVariant(
         getPreferredInitialVariant({
@@ -312,7 +327,7 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
         })
       );
     },
-    [modelOptions, organizationId, variant]
+    [modelOptions, organizationId, variant, persistServerLastSelected]
   );
 
   const handleVariantChange = useCallback(
@@ -320,9 +335,10 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
       setVariant(newVariant);
       if (model) {
         setLastUsedVariant(model, newVariant, organizationId);
+        persistServerLastSelected({ model, ...(newVariant ? { variant: newVariant } : {}) });
       }
     },
-    [model, organizationId]
+    [model, organizationId, persistServerLastSelected]
   );
 
   // ---------------------------------------------------------------------------
@@ -872,12 +888,21 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
   // ---------------------------------------------------------------------------
   const isPromptTooLong = prompt.length > CLOUD_AGENT_PROMPT_MAX_LENGTH;
 
+  const selectedModelOption = modelOptions.find(m => m.id === model);
+  // Limited-access users can submit when they've picked a free or BYOK-capable
+  // model from the filtered picker; the server still gates paid models behind
+  // the minimum balance, but the submit button shouldn't pretend otherwise.
+  const limitedAccessModelIsAllowed =
+    hasLimitedAccess &&
+    !!selectedModelOption &&
+    (selectedModelOption.isFree || selectedModelOption.hasUserByokAvailable);
+
   const isFormValid =
     prompt.trim().length > 0 &&
     !isPromptTooLong &&
     model.length > 0 &&
     !isPreparing &&
-    !hasInsufficientBalance &&
+    (!hasInsufficientBalance || limitedAccessModelIsAllowed) &&
     !attachmentUpload.hasUploadingAttachments;
 
   const handleStartSession = useCallback(async () => {
@@ -1158,11 +1183,27 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
       <MobileSidebarToggle />
       <div className="w-full max-w-2xl space-y-4">
         {/* Insufficient balance banner */}
-        {hasInsufficientBalance && eligibilityData && (
+        {hasInsufficientBalance && eligibilityData && !hasLimitedAccess && (
           <InsufficientBalanceBanner
             balance={eligibilityData.balance}
             organizationId={organizationId}
             content={{ type: 'productName', productName: 'Cloud Agent' }}
+          />
+        )}
+
+        {/* Free-models-available banner when balance is low but free models are usable */}
+        {hasLimitedAccess && eligibilityData && (
+          <InsufficientBalanceBanner
+            balance={eligibilityData.balance}
+            organizationId={organizationId}
+            colorScheme="info"
+            content={{
+              type: 'custom',
+              title: 'Free Models Available',
+              description:
+                'You can use free models in Cloud Agent. Add credits to unlock all models.',
+              compactActionText: 'Add credits to unlock all models',
+            }}
           />
         )}
 
@@ -1495,28 +1536,16 @@ export function NewSessionPanel({ organizationId, isDevcontainerAvailable }: New
                       />
                     </button>
                   </div>
-                  {organizationId &&
-                    bitbucketIntegrationHref &&
-                    bitbucketRepoData?.status &&
-                    bitbucketRepoData.status !== 'available' && (
+                  {(bitbucketRepoData?.status === 'reconnect_required' ||
+                    bitbucketRepoData?.status === 'insufficient_permissions') &&
+                    bitbucketIntegrationHref && (
                       <div className="border-b px-3 py-2 text-xs">
-                        {bitbucketRepoData.status === 'temporarily_unavailable' ? (
-                          <span className="text-muted-foreground">
-                            Bitbucket is temporarily unavailable. Refresh repositories to try again.
-                          </span>
-                        ) : (
-                          <Link
-                            href={bitbucketIntegrationHref}
-                            className="text-link hover:text-link-hover underline underline-offset-4"
-                          >
-                            {bitbucketRepoData.status === 'reconnect_required' ||
-                            bitbucketRepoData.status === 'insufficient_permissions'
-                              ? 'Replace the Bitbucket token to list repositories'
-                              : bitbucketRepoData.status === 'invalid_request'
-                                ? 'Review the Bitbucket connection'
-                                : 'Connect Bitbucket to list repositories'}
-                          </Link>
-                        )}
+                        <Link
+                          href={bitbucketIntegrationHref}
+                          className="text-link hover:text-link-hover underline underline-offset-4"
+                        >
+                          Replace the Bitbucket token to list repositories
+                        </Link>
                       </div>
                     )}
                   <CommandEmpty>No repositories match your search</CommandEmpty>

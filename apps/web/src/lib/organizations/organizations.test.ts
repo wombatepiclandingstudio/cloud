@@ -5,7 +5,9 @@ import {
   organization_invitations,
   organization_memberships,
   organization_membership_removals,
+  organization_seats_purchases,
   organization_user_limits,
+  kilocode_users,
 } from '@kilocode/db/schema';
 import { insertTestUser } from '@/tests/helpers/user.helper';
 import { eq, and } from 'drizzle-orm';
@@ -34,6 +36,8 @@ describe('Organizations', () => {
     await db.delete(organization_memberships);
     // eslint-disable-next-line drizzle/enforce-delete-with-where
     await db.delete(organization_membership_removals);
+    // eslint-disable-next-line drizzle/enforce-delete-with-where
+    await db.delete(organization_seats_purchases);
     // eslint-disable-next-line drizzle/enforce-delete-with-where
     await db.delete(organizations);
   });
@@ -224,6 +228,55 @@ describe('Organizations', () => {
         expect.arrayContaining([childOne.id, childTwo.id, unrelated.id])
       );
       expect(result.map(organization => organization.id)).not.toContain(parent.id);
+    });
+
+    test('excludeAccessBlocked omits a hard-expired trial org with no active subscription', async () => {
+      const user = await insertTestUser();
+      const activeTrial = await createOrganization('Active Trial Org', user.id);
+      const blocked = await createOrganization('Access Blocked Org', user.id);
+      await db
+        .update(organizations)
+        .set({ free_trial_end_at: '2020-01-01T00:00:00.000Z' })
+        .where(eq(organizations.id, blocked.id));
+
+      const result = await getProfileOrganizations(user.id, { excludeAccessBlocked: true });
+
+      expect(result.map(organization => organization.id)).toEqual([activeTrial.id]);
+    });
+
+    test('excludeAccessBlocked keeps a hard-expired trial org with an active seat purchase', async () => {
+      const user = await insertTestUser();
+      const subscribed = await createOrganization('Subscribed Org', user.id);
+      await db
+        .update(organizations)
+        .set({ free_trial_end_at: '2020-01-01T00:00:00.000Z' })
+        .where(eq(organizations.id, subscribed.id));
+      await db.insert(organization_seats_purchases).values({
+        subscription_stripe_id: 'sub_profile_active',
+        organization_id: subscribed.id,
+        seat_count: 5,
+        amount_usd: 50.0,
+        starts_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        subscription_status: 'active',
+      });
+
+      const result = await getProfileOrganizations(user.id, { excludeAccessBlocked: true });
+
+      expect(result.map(organization => organization.id)).toEqual([subscribed.id]);
+    });
+
+    test('includes hard-expired trial organizations by default', async () => {
+      const user = await insertTestUser();
+      const blocked = await createOrganization('Access Blocked Org', user.id);
+      await db
+        .update(organizations)
+        .set({ free_trial_end_at: '2020-01-01T00:00:00.000Z' })
+        .where(eq(organizations.id, blocked.id));
+
+      const result = await getProfileOrganizations(user.id);
+
+      expect(result.map(organization => organization.id)).toEqual([blocked.id]);
     });
   });
 
@@ -1543,6 +1596,55 @@ describe('Organizations', () => {
         });
         expect(storedInvitation?.accepted_at).toBeDefined();
         expect(storedInvitation?.accepted_at).not.toBeNull();
+      });
+
+      test('disables the personal account when the account was created after the invite', async () => {
+        const owner = await insertTestUser();
+        const invitee = await insertTestUser();
+        const organization = await createOrganization('Test Org', owner.id);
+
+        const invitation = await inviteUserToOrganization(
+          organization.id,
+          owner.id,
+          invitee.google_user_email,
+          'member'
+        );
+        // Simulate a brand-new account created to accept an already-pending invite.
+        await db
+          .update(organization_invitations)
+          .set({ created_at: sql`NOW() - INTERVAL '1 hour'` })
+          .where(eq(organization_invitations.id, invitation.id));
+
+        const result = await acceptOrganizationInvite(invitee.id, invitation.token);
+        expect(result.success).toBe(true);
+
+        const updatedInvitee = await db.query.kilocode_users.findFirst({
+          where: eq(kilocode_users.id, invitee.id),
+        });
+        expect(updatedInvitee?.personal_account_disabled).toBe(true);
+      });
+
+      test('leaves the personal account untouched when the account predates the invite', async () => {
+        const owner = await insertTestUser();
+        const invitee = await insertTestUser();
+        const organization = await createOrganization('Test Org', owner.id);
+
+        // The invitation is created after the invitee's account, matching an
+        // existing user who is later invited to an organization.
+        const invitation = await inviteUserToOrganization(
+          organization.id,
+          owner.id,
+          invitee.google_user_email,
+          'member'
+        );
+
+        const result = await acceptOrganizationInvite(invitee.id, invitation.token);
+        expect(result.success).toBe(true);
+
+        const updatedInvitee = await db.query.kilocode_users.findFirst({
+          where: eq(kilocode_users.id, invitee.id),
+        });
+        expect(updatedInvitee?.personal_account_disabled).toBe(false);
       });
 
       test('rejects accepting a pre-existing invitation into a child organization', async () => {

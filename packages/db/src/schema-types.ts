@@ -595,6 +595,75 @@ export const CodingPlanTermKind = {
 
 export type CodingPlanTermKind = (typeof CodingPlanTermKind)[keyof typeof CodingPlanTermKind];
 
+// --- Cost Insights enums ---
+
+export const CostInsightSpendCategory = {
+  Variable: 'variable',
+  Scheduled: 'scheduled',
+} as const;
+
+export type CostInsightSpendCategory =
+  (typeof CostInsightSpendCategory)[keyof typeof CostInsightSpendCategory];
+
+export const CostInsightSpendSource = {
+  AiGateway: 'ai_gateway',
+  KiloClaw: 'kiloclaw',
+  CodingPlan: 'coding_plan',
+  Other: 'other',
+} as const;
+
+export type CostInsightSpendSource =
+  (typeof CostInsightSpendSource)[keyof typeof CostInsightSpendSource];
+
+export const CostInsightRollupDegradedReason = {
+  CaptureBypass: 'capture_bypass',
+  ReconciliationMismatch: 'reconciliation_mismatch',
+  LateSourceData: 'late_source_data',
+} as const;
+
+export type CostInsightRollupDegradedReason =
+  (typeof CostInsightRollupDegradedReason)[keyof typeof CostInsightRollupDegradedReason];
+
+export const CostInsightEventType = {
+  ConfigChanged: 'config_changed',
+  AnomalyAlert: 'anomaly_alert',
+  ThresholdCrossed: 'threshold_crossed',
+  AlertReviewed: 'alert_reviewed',
+  SuggestionCreated: 'suggestion_created',
+  SuggestionDismissed: 'suggestion_dismissed',
+  Disabled: 'disabled',
+} as const;
+
+export type CostInsightEventType = (typeof CostInsightEventType)[keyof typeof CostInsightEventType];
+
+export const CostInsightAlertKind = {
+  Anomaly: 'anomaly',
+  Threshold: 'threshold',
+  Threshold7Day: 'threshold_7d',
+  Threshold30Day: 'threshold_30d',
+} as const;
+
+export type CostInsightAlertKind = (typeof CostInsightAlertKind)[keyof typeof CostInsightAlertKind];
+
+export const CostInsightSuggestionKind = {
+  CodingPlan: 'coding_plan',
+  KiloPass: 'kilo_pass',
+} as const;
+
+export type CostInsightSuggestionKind =
+  (typeof CostInsightSuggestionKind)[keyof typeof CostInsightSuggestionKind];
+
+export const CostInsightNotificationStatus = {
+  Pending: 'pending',
+  Sending: 'sending',
+  Sent: 'sent',
+  Failed: 'failed',
+  Skipped: 'skipped',
+} as const;
+
+export type CostInsightNotificationStatus =
+  (typeof CostInsightNotificationStatus)[keyof typeof CostInsightNotificationStatus];
+
 // NOTE: Do not change these action names. Use present tense for consistency.
 export const KiloClawAdminAuditAction = z.enum([
   'kiloclaw.volume.extend',
@@ -733,12 +802,47 @@ export const OrganizationPlanSchema = z.enum(['teams', 'enterprise']);
 
 export type OrganizationPlan = z.infer<typeof OrganizationPlanSchema>;
 
+export const ORGANIZATION_AUTO_MODEL_ID = 'kilo-auto/org';
+export const MAX_ORGANIZATION_AUTO_ROUTES = 100;
+
+const OrganizationAutoModelRouteSlugSchema = z
+  .string()
+  .min(1, 'Organization Auto route slug is required')
+  .max(50, 'Organization Auto route slug must be less than 50 characters')
+  .regex(
+    /^[a-z0-9-]+$/,
+    'Organization Auto route slug must contain only lowercase letters, numbers, and hyphens'
+  );
+
+const OrganizationAutoModelTargetSchema = z
+  .string()
+  .min(1, 'Organization Auto route target is required')
+  .max(200, 'Organization Auto route target must be less than 200 characters')
+  .refine(value => !value.endsWith('/*'), {
+    message: 'Organization Auto route target must be a concrete model identifier',
+  })
+  .refine(value => value !== ORGANIZATION_AUTO_MODEL_ID, {
+    message: 'Organization Auto cannot target itself',
+  });
+
+export const OrganizationAutoModelSettingsSchema = z.object({
+  routes: z
+    .record(OrganizationAutoModelRouteSlugSchema, OrganizationAutoModelTargetSchema)
+    .refine(routes => Object.keys(routes).length <= MAX_ORGANIZATION_AUTO_ROUTES, {
+      message: `Organization Auto supports at most ${MAX_ORGANIZATION_AUTO_ROUTES} routes`,
+    }),
+  fallback_model: OrganizationAutoModelTargetSchema,
+});
+
+export type OrganizationAutoModelSettings = z.infer<typeof OrganizationAutoModelSettingsSchema>;
+
 const OrganizationSettingsSchema = z.object({
   provider_allow_list: z.array(z.string()).optional(),
 
   model_deny_list: z.array(z.string()).optional(),
 
   default_model: z.string().optional(),
+  org_auto_model: OrganizationAutoModelSettingsSchema.optional(),
   data_collection: z.enum(['allow', 'deny']).nullable().optional(),
   // null means they were grandfathered in and so they have usage limits enabled
   enable_usage_limits: z.boolean().optional(),
@@ -788,7 +892,6 @@ export const OrganizationModeConfigSchema = z.object({
   description: z.string().optional(),
   customInstructions: z.string().optional(),
   groups: z.array(GroupEntrySchema),
-  defaultModel: z.string().min(1, 'Default model cannot be empty').optional(),
 });
 
 export type OrganizationModeConfig = z.infer<typeof OrganizationModeConfigSchema>;
@@ -1350,6 +1453,12 @@ export const OpenRouterEndpoint = z.object({
   provider_display_name: z.string(),
   is_free: z.boolean(),
   pricing: OpenRouterPricing,
+  data_policy: z
+    .object({
+      training: z.boolean().optional(),
+      retainsPrompts: z.boolean().optional(),
+    })
+    .nullish(),
 });
 
 export type OpenRouterModel = z.infer<typeof OpenRouterModel>;

@@ -27,9 +27,11 @@ import {
   MessageSquare,
   ChevronLeft,
   ChevronRight,
+  ChartLine,
 } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import OrganizationSwitcher from './OrganizationSwitcher';
 import { useRoleTesting } from '@/contexts/RoleTestingContext';
 import HeaderLogo from '@/components/HeaderLogo';
@@ -39,15 +41,21 @@ import SidebarMenuList from './SidebarMenuList';
 import SidebarUserFooter from './SidebarUserFooter';
 import { ENABLE_DEPLOY_FEATURE } from '@/lib/constants';
 import { useFeatureFlagEnabled } from 'posthog-js/react';
+import { useTRPC } from '@/lib/trpc/utils';
 
 type OrganizationAppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   organizationId: string;
 };
 
+function formatReviewItemBadge(count: number | undefined): string | undefined {
+  return count && count > 0 ? count.toLocaleString('en-US') : undefined;
+}
+
 export default function OrganizationAppSidebar({
   organizationId,
   ...props
 }: OrganizationAppSidebarProps) {
+  const trpc = useTRPC();
   const { data: user, isLoading } = useUser();
   const pathname = usePathname();
   const { assumedRole, setAssumedRole, setOriginalRole } = useRoleTesting();
@@ -99,11 +107,26 @@ export default function OrganizationAppSidebar({
     }
   }, [actualRole, user?.is_admin, setOriginalRole, setAssumedRole]);
 
+  const hasOwnerLevelAccess = currentRole === 'owner' || currentRole === 'billing_manager';
+  const { data: costInsightsAccess } = useQuery({
+    ...trpc.organizations.costInsights.getAccessState.queryOptions({ organizationId }),
+    enabled: hasOwnerLevelAccess,
+    staleTime: 60_000,
+  });
+  const canViewCostInsights = hasOwnerLevelAccess && costInsightsAccess?.enabled === true;
+  const { data: costInsightsAttention } = useQuery({
+    ...trpc.organizations.costInsights.getAttentionState.queryOptions({ organizationId }),
+    enabled: canViewCostInsights,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+
   // Dashboard group
   const dashboardItems: Array<{
     title: string;
     icon: React.ElementType;
     url: string;
+    badge?: string;
     className?: string;
   }> = [
     ...(showWelcome
@@ -125,9 +148,17 @@ export default function OrganizationAppSidebar({
       icon: ChartColumnIncreasing,
       url: `/organizations/${organizationId}/usage-details`,
     },
+    ...(canViewCostInsights
+      ? [
+          {
+            title: 'Cost Insights',
+            icon: ChartLine,
+            url: `/organizations/${organizationId}/cost-insights`,
+            badge: formatReviewItemBadge(costInsightsAttention?.reviewItemCount),
+          },
+        ]
+      : []),
   ];
-
-  const hasOwnerLevelAccess = currentRole === 'owner' || currentRole === 'billing_manager';
 
   // KiloClaw group
   const kiloClawItems: Array<{

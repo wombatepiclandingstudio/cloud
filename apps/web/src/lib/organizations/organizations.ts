@@ -1,27 +1,35 @@
-import type { User, Organization, OrganizationInvitation } from '@kilocode/db/schema';
+import type {
+  User,
+  Organization,
+  OrganizationInvitation,
+  OrganizationSeatsPurchase,
+} from '@kilocode/db/schema';
 import {
   type OrganizationRole,
   type UserOrganizationWithSeats,
   type OrganizationMember,
   type AcceptInviteResult,
   type OrganizationSettings,
+  OrganizationSettingsSchema,
 } from '@/lib/organizations/organization-types';
 import {
   kilocode_users,
   organization_invitations,
   organization_membership_removals,
   organization_memberships,
+  organization_seats_purchases,
   organization_user_limits,
   organization_user_usage,
   organizations,
 } from '@kilocode/db/schema';
 import type { DrizzleTransaction } from '@/lib/drizzle';
 import { auto_deleted_at, db, sql } from '@/lib/drizzle';
-import { and, eq, isNull, gt } from 'drizzle-orm';
+import { and, asc, eq, isNull, gt } from 'drizzle-orm';
 import { TRIAL_DURATION_DAYS } from '@/lib/constants';
 import { randomUUID } from 'crypto';
 import { fromMicrodollars, getLowerDomainFromEmail, normalizeEmail } from '@/lib/utils';
 import { resolveEffectiveOrganizationSsoPolicy } from './organization-sso-policy';
+import { classifyOrganizationEntitlement } from './trial-utils';
 import { logExceptInTest } from '@/lib/utils.server';
 import { APP_URL } from '@/lib/constants';
 import { createAuditLog } from '@/lib/organizations/organization-audit-logs';
@@ -155,20 +163,49 @@ export type ProfileOrganization = {
   role: OrganizationRole;
 };
 
-export async function getProfileOrganizations(userId: User['id']): Promise<ProfileOrganization[]> {
+export type GetProfileOrganizationsOptions = {
+  // When true, omit organizations whose free trial has hard-expired without an
+  // active entitlement (the "Access Blocked" state). These orgs are locked to
+  // read-only, so they should not be offered as selectable profile orgs.
+  excludeAccessBlocked?: boolean;
+};
+
+export async function getProfileOrganizations(
+  userId: User['id'],
+  options: GetProfileOrganizationsOptions = {}
+): Promise<ProfileOrganization[]> {
+  const { excludeAccessBlocked = false } = options;
+
+  // Only pull in each org's current subscription status when the caller needs
+  // to hide "Access Blocked" orgs. organization_seats_purchases is append-only,
+  // so the most recently created row reflects the current state. This keeps
+  // getProfileOrganizations a single query and adds no seat-purchase lookup for
+  // callers that don't opt in.
+  const latestSeatPurchaseStatus = excludeAccessBlocked
+    ? sql<OrganizationSeatsPurchase['subscription_status'] | null>`(
+        SELECT ${organization_seats_purchases.subscription_status}
+        FROM ${organization_seats_purchases}
+        WHERE ${organization_seats_purchases.organization_id} = ${organizations.id}
+        ORDER BY ${organization_seats_purchases.created_at} DESC
+        LIMIT 1
+      )`
+    : sql<OrganizationSeatsPurchase['subscription_status'] | null>`NULL`;
+
   const results = await db
     .select({
       organization: organizations,
       membership: organization_memberships,
+      latestSeatPurchaseStatus,
     })
     .from(organizations)
     .innerJoin(
       organization_memberships,
       eq(organization_memberships.organization_id, organizations.id)
     )
-    .where(
-      and(eq(organization_memberships.kilo_user_id, userId), isNull(organizations.deleted_at))
-    );
+    .where(and(eq(organization_memberships.kilo_user_id, userId), isNull(organizations.deleted_at)))
+    // Deterministic order so callers can treat the first element as a stable
+    // default selection (e.g. profile `selectedOrganizationId`).
+    .orderBy(asc(organizations.created_at), asc(organizations.id));
 
   const parentOrganizationIdsWithMembershipInAChild = new Set(
     results.flatMap(result =>
@@ -176,8 +213,18 @@ export async function getProfileOrganizations(userId: User['id']): Promise<Profi
     )
   );
 
+  const now = new Date();
   return results
     .filter(result => !parentOrganizationIdsWithMembershipInAChild.has(result.organization.id))
+    .filter(result => {
+      if (!excludeAccessBlocked) return true;
+      const classification = classifyOrganizationEntitlement({
+        organization: result.organization,
+        latestSeatPurchaseStatus: result.latestSeatPurchaseStatus,
+        now,
+      });
+      return !classification.isTrialExpiredForEnforcement;
+    })
     .map(result => ({
       id: result.organization.id,
       name: result.organization.name,
@@ -646,6 +693,7 @@ export async function acceptOrganizationInvite(
         .select({
           email: kilocode_users.google_user_email,
           normalizedEmail: kilocode_users.normalized_email,
+          createdAt: kilocode_users.created_at,
         })
         .from(kilocode_users)
         .where(eq(kilocode_users.id, userId))
@@ -735,6 +783,19 @@ export async function acceptOrganizationInvite(
         invited_by: invitation.invited_by,
       });
 
+      // If the invitation predates the account, the account was created after
+      // (i.e. because of) a pending invite: this is a brand-new user joining an
+      // organization via invite, so disable their personal account. Existing
+      // users — whose account predates the invitation — keep their value.
+      const accountCreatedForInvite =
+        new Date(invitation.created_at).getTime() < new Date(acceptingUser.createdAt).getTime();
+      if (accountCreatedForInvite) {
+        await tx
+          .update(kilocode_users)
+          .set({ personal_account_disabled: true })
+          .where(eq(kilocode_users.id, userId));
+      }
+
       // Clear any previous removal record so the user isn't treated as "removed"
       // by subsequent webhook events (Subscription Lifecycle 2)
       await tx
@@ -814,6 +875,33 @@ export async function isOrganizationMember(
 export function getAcceptInviteUrl(inviteToken: OrganizationInvitation['token']): string {
   const acceptInviteUrl = `${APP_URL}/users/accept-invite/${inviteToken}`;
   return acceptInviteUrl;
+}
+
+export async function mutateOrganizationSettings(
+  organizationId: Organization['id'],
+  mutate: (organization: Organization) => Promise<OrganizationSettings> | OrganizationSettings,
+  txn?: DrizzleTransaction
+): Promise<OrganizationSettings> {
+  const run = async (tx: DrizzleTransaction): Promise<OrganizationSettings> => {
+    const [organization] = await tx
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, organizationId))
+      .for('update');
+    if (!organization) {
+      throw new Error(`Organization ${organizationId} not found`);
+    }
+    const nextSettings = await mutate(organization);
+    // Returning the locked settings object is the explicit no-op signal.
+    if (nextSettings === organization.settings) {
+      return organization.settings;
+    }
+    const settings = OrganizationSettingsSchema.parse(nextSettings);
+    await tx.update(organizations).set({ settings }).where(eq(organizations.id, organizationId));
+    return settings;
+  };
+
+  return txn ? run(txn) : db.transaction(run);
 }
 
 export async function updateOrganizationSettings(

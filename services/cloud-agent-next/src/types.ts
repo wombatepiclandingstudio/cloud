@@ -10,6 +10,7 @@ import type { SecretBinding } from './auth.js';
 import * as z from 'zod';
 import { Limits } from './schema.js';
 import { SESSION_ID_RE } from './shared/protocol.js';
+import { PNPM_STORE_ENV_VAR } from './shared/runtime-environment.js';
 
 export const sessionIdSchema = z.string().regex(SESSION_ID_RE, 'Invalid session ID format');
 
@@ -81,7 +82,12 @@ export function parseManagedBitbucketCloneUrl(
   return parseBitbucketCloudCloneUrl(repositoryUrl, true);
 }
 
-export const RESERVED_ENV_VARS = ['HOME', 'SESSION_ID', 'SESSION_HOME'] as const;
+export const RESERVED_ENV_VARS = [
+  'HOME',
+  'SESSION_ID',
+  'SESSION_HOME',
+  PNPM_STORE_ENV_VAR,
+] as const;
 
 export const envVarsSchema = z
   .record(
@@ -418,6 +424,8 @@ export type Env = {
   INTERNAL_API_SECRET_PROD: SecretsStoreSecret;
   /** R2 bucket for storing session logs */
   R2_BUCKET: R2Bucket;
+  /** R2 bucket used by Cloudflare Sandbox directory backups */
+  BACKUP_BUCKET?: R2Bucket;
   /** Queue for callback messages (optional - supports incremental rollout) */
   CALLBACK_QUEUE?: Queue<CallbackJob>;
   /** Dedicated best-effort Cloud Agent reporting queue. */
@@ -448,6 +456,8 @@ export type Env = {
   INTERNAL_API_SECRET?: string;
   /** Worker base URL for building WebSocket ingest endpoint */
   WORKER_URL?: string;
+  /** Sandbox control transport; local dev uses RPC for streaming backup restores */
+  SANDBOX_TRANSPORT?: 'http' | 'websocket' | 'rpc';
   /**
    * RSA private key for decrypting encrypted secrets from agent environment profiles.
    * Required when using encryptedSecrets feature. PEM format (base64-encoded).
@@ -461,6 +471,21 @@ export type Env = {
   PER_SESSION_SANDBOX_ORG_IDS?: string;
   /** Comma-separated org IDs that use managed SCM credential containment, or `*` for all orgs */
   MANAGED_SCM_CONTAINMENT_ORG_IDS?: string;
+  /** Comma-separated org IDs that receive workspace repo snapshots, or '*' for all */
+  REPO_SNAPSHOT_ORG_IDS?: string;
+  /**
+   * Comma-separated org IDs that get the wrapper-side tool/server memory
+   * cgroup partition, or '*' for all. See MEMORY_CGROUPS_PLAN.md (W4).
+   */
+  TOOL_CGROUP_ORG_IDS?: string;
+  /** Passed through to the wrapper when the org is gated in by TOOL_CGROUP_ORG_IDS. See wrapper/src/tool-cgroup.ts. */
+  TOOL_CGROUP_MODE?: string;
+  TOOL_CGROUP_RESERVE_MB?: string;
+  TOOL_CGROUP_SERVER_LIMIT_MB?: string;
+  TOOL_CGROUP_SWEEP_INTERVAL_MS?: string;
+  TOOL_CGROUP_OOM_GROUP?: string;
+  TOOL_CGROUP_CPU_WEIGHT?: string;
+  TOOL_CGROUP_SERVER_CPU_WEIGHT?: string;
   /** R2 endpoint for S3-compatible API access (presigned URL generation) */
   R2_ENDPOINT?: string;
   /** R2 read-only access key ID for downloading image attachments */
@@ -469,6 +494,14 @@ export type Env = {
   R2_ATTACHMENTS_READONLY_SECRET_ACCESS_KEY?: string;
   /** R2 bucket name for image attachments */
   R2_ATTACHMENTS_BUCKET?: string;
+  /** R2 bucket name used by Cloudflare Sandbox directory backups */
+  BACKUP_BUCKET_NAME?: string;
+  /** Cloudflare account ID used for R2 backup presigning */
+  CLOUDFLARE_R2_ACCOUNT_ID?: string;
+  /** R2 access key ID used for backup uploads */
+  R2_ACCESS_KEY_ID?: string;
+  /** R2 secret access key used for backup uploads */
+  R2_SECRET_ACCESS_KEY?: string;
   /**
    * Hyperdrive binding for reading Postgres (agent environment profiles).
    * The `connectionString` is proxied through Hyperdrive so the worker

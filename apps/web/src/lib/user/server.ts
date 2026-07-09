@@ -45,7 +45,11 @@ import type { Organization, User } from '@kilocode/db/schema';
 import type { AuthProviderId } from '@kilocode/db/schema-types';
 import PostHogClient from '@/lib/posthog';
 import { captureException } from '@sentry/nextjs';
-import { getSingleUserOrganization, isOrganizationMember } from '@/lib/organizations/organizations';
+import {
+  getSingleUserOrganization,
+  getUserOrganizationsWithSeats,
+  isOrganizationMember,
+} from '@/lib/organizations/organizations';
 import { resolveSsoAuthorityForDomain } from '@/lib/organizations/organization-sso-policy';
 import type { AccountLinkingSession } from '@/lib/account-linking-session';
 import { getAccountLinkingSession } from '@/lib/account-linking-session';
@@ -1058,6 +1062,20 @@ export async function getUserFromAuthOrRedirect(
   return user;
 }
 
+// Resolve where a user whose personal account is disabled should land by default.
+// Prefers their oldest organization (stable across requests); falls back to an
+// allowed personal route when they somehow belong to no organizations.
+// Note: this only affects where we send them by default (e.g. after login); we
+// do not block direct navigation to personal routes.
+async function resolvePersonalAccountDisabledLandingPath(userId: User['id']): Promise<string> {
+  const orgs = await getUserOrganizationsWithSeats(userId);
+  const firstOrg = [...orgs].sort((a, b) => {
+    const byCreatedAt = a.created_at.localeCompare(b.created_at);
+    return byCreatedAt !== 0 ? byCreatedAt : a.organizationId.localeCompare(b.organizationId);
+  })[0];
+  return firstOrg ? `/organizations/${firstOrg.organizationId}` : '/connected-accounts';
+}
+
 export async function signInUrlWithCallbackPath(): Promise<string> {
   return appendCallbackPath('/users/sign_in');
 }
@@ -1168,6 +1186,12 @@ export function getUserUUID(user: User): string {
 // the org page will be redirected to if the user is a member of exactly one organization
 // or if the org is SSO org
 export async function getProfileRedirectPath(user: User) {
+  // Users whose personal account is disabled have no personal surface;
+  // always send them into an organization regardless of org count.
+  if (user.personal_account_disabled) {
+    return resolvePersonalAccountDisabledLandingPath(user.id);
+  }
+
   // Check if user is a member of exactly one organization (skip redirect if multiple)
   const singleOrg = await getSingleUserOrganization(user.id);
   if (singleOrg) {

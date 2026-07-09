@@ -17,10 +17,11 @@ import {
   getUserFromAuth,
 } from './server';
 import { db } from '@/lib/drizzle';
-import { organization_seats_purchases, organizations } from '@kilocode/db/schema';
+import { kilocode_users, organization_seats_purchases, organizations } from '@kilocode/db/schema';
 import type { Organization, User } from '@kilocode/db/schema';
 import { createTestOrganization } from '@/tests/helpers/organization.helper';
 import { insertTestUser } from '@/tests/helpers/user.helper';
+import { createCallerForUser } from '@/routers/test-utils';
 import { generateApiToken } from '@/lib/tokens';
 import { eq } from 'drizzle-orm';
 import { v5 as uuidv5 } from 'uuid';
@@ -446,6 +447,45 @@ describe('getUserFromAuth', () => {
     expect(result.authFailedResponse).toBeNull();
     expect(result.user?.id).toBe(user.id);
   });
+
+  test('an API token minted before a platform-admin grant cannot reach admin-only paths afterward', async () => {
+    // Regression: granting platform admin rotates api_token_pepper, so a
+    // bearer token issued while the user was non-admin must stop working
+    // rather than silently becoming admin-capable.
+    const grantingAdmin = await insertTestUser({
+      google_user_email: `granting-admin-${crypto.randomUUID()}@kilocode.ai`,
+      hosted_domain: 'kilocode.ai',
+      is_admin: true,
+    });
+    const target = await insertTestUser({
+      google_user_email: `grant-target-${crypto.randomUUID()}@kilocode.ai`,
+      hosted_domain: 'kilocode.ai',
+      is_admin: false,
+      api_token_pepper: 'pre-grant-pepper',
+    });
+
+    const preGrantToken = generateApiToken(target);
+    mockHeaders.mockResolvedValue(new Headers({ Authorization: `Bearer ${preGrantToken}` }));
+
+    // Before the grant the token is valid but non-admin: an admin-only check fails.
+    const beforeGrant = await getUserFromAuth({ adminOnly: true });
+    expect(beforeGrant.authFailedResponse).not.toBeNull();
+
+    const caller = await createCallerForUser(grantingAdmin.id);
+    await caller.admin.users.setPlatformAdminAccess({ userId: target.id, isAdmin: true });
+
+    const rotated = await db.query.kilocode_users.findFirst({
+      where: eq(kilocode_users.id, target.id),
+    });
+    expect(rotated?.is_admin).toBe(true);
+    expect(rotated?.api_token_pepper).not.toBe('pre-grant-pepper');
+
+    // The pre-grant token now carries a stale pepper and must be rejected —
+    // it must NOT be silently upgraded to admin-capable.
+    const afterGrant = await getUserFromAuth({ adminOnly: true });
+    expect(afterGrant.authFailedResponse).not.toBeNull();
+    expect(afterGrant.user).toBeNull();
+  });
 });
 
 describe('parseSignInRedirectContext', () => {
@@ -561,5 +601,29 @@ describe('getProfileRedirectPath', () => {
     await expect(getProfileRedirectPath(pastDueUser)).resolves.toBe(
       `/organizations/${pastDueOrganization.id}`
     );
+  });
+
+  describe('users with personal account disabled', () => {
+    test('redirects multi-organization users to one of their organizations', async () => {
+      const invitedUser = await insertTestUser({
+        google_user_name: 'Invited Multi Org User',
+        personal_account_disabled: true,
+      });
+      const orgA = await createTestOrganization('Invited Org A', invitedUser.id, 100_000);
+      const orgB = await createTestOrganization('Invited Org B', invitedUser.id, 100_000);
+
+      await expect(getProfileRedirectPath(invitedUser)).resolves.toMatch(
+        new RegExp(`^/organizations/(${orgA.id}|${orgB.id})$`)
+      );
+    });
+
+    test('falls back to connected accounts when the user has no organizations', async () => {
+      const orphanUser = await insertTestUser({
+        google_user_name: 'Invited Orphan User',
+        personal_account_disabled: true,
+      });
+
+      await expect(getProfileRedirectPath(orphanUser)).resolves.toBe('/connected-accounts');
+    });
   });
 });

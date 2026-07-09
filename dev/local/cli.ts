@@ -10,6 +10,7 @@ import {
   resolveGroups,
   topologicalSort,
   portOffset,
+  resolveSessionNextAuthUrl,
   services,
 } from './services';
 import { syncEnvVars } from './env-sync';
@@ -220,6 +221,14 @@ async function cmdUp(args: string[], repoRoot: string): Promise<void> {
   }
   if (process.env.PORT !== undefined && process.env.PORT !== '') {
     sessionEnv.PORT = String(getService('nextjs').port);
+  }
+  const sessionNextAuthUrl = resolveSessionNextAuthUrl({
+    portOffset,
+    serviceNames,
+    nextjsPort: getService('nextjs').port,
+  });
+  if (sessionNextAuthUrl !== undefined) {
+    sessionEnv.NEXTAUTH_URL = sessionNextAuthUrl;
   }
   if (process.env.DEBUG_SHOW_DEV_UI !== undefined && process.env.DEBUG_SHOW_DEV_UI !== '') {
     sessionEnv.DEBUG_SHOW_DEV_UI = process.env.DEBUG_SHOW_DEV_UI;
@@ -638,7 +647,12 @@ async function cmdRestart(serviceName: string): Promise<void> {
     process.exit(1);
   }
 
-  restartServiceInTmux(sessionName, serviceName);
+  console.log(`Restarting ${serviceName} (waiting for the old process to shut down)...`);
+  const outcome = await restartServiceInTmux(sessionName, serviceName);
+  if (outcome === 'gave-up') {
+    console.error(`${serviceName} did not shut down in time; not relaunched`);
+    process.exit(1);
+  }
   console.log(`Restarted ${serviceName}`);
 }
 
