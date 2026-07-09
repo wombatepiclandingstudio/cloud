@@ -29,7 +29,6 @@ import { deleteProjectAssets } from '@/lib/r2/app-builder-assets';
 import { getEnvVariable } from '@/lib/dotenvx';
 import { AGENT_ENV_VARS_PUBLIC_KEY } from '@/lib/config.server';
 import { encryptWithPublicKey, type EncryptedEnvelope } from '@/lib/encryption';
-import { modelSupportsImages } from '@/lib/ai-gateway/providers/model-capabilities';
 import { errorExceptInTest } from '@/lib/utils.server';
 
 import type {
@@ -149,16 +148,14 @@ type NewSessionDecision =
   | { createNew: false }
   | {
       createNew: true;
-      reason: 'upgrade' | 'github_migration' | 'model_vision_change';
+      reason: 'upgrade' | 'github_migration';
     };
 
 async function shouldCreateNewSession(
   project: AppBuilderProject,
   currentSessionId: string,
   currentWorkerVersion: WorkerVersion,
-  authToken: string,
-  currentModelId: string,
-  newModelId: string
+  authToken: string
 ): Promise<NewSessionDecision> {
   if (currentWorkerVersion !== REQUIRED_WORKER_VERSION) {
     return { createNew: true, reason: 'upgrade' };
@@ -172,19 +169,6 @@ async function shouldCreateNewSession(
       return {
         createNew: true,
         reason: 'github_migration',
-      };
-    }
-  }
-
-  if (currentModelId !== newModelId) {
-    const [currentSupportsImages, newSupportsImages] = await Promise.all([
-      modelSupportsImages(currentModelId),
-      modelSupportsImages(newModelId),
-    ]);
-    if (currentSupportsImages !== newSupportsImages) {
-      return {
-        createNew: true,
-        reason: 'model_vision_change',
       };
     }
   }
@@ -234,13 +218,12 @@ type CreateSessionParams = {
   authToken: string;
   gitRepoFullName: string | null;
   images?: Images;
-  reason: 'upgrade' | 'github_migration' | 'model_vision_change' | 'user_initiated';
+  reason: 'upgrade' | 'github_migration' | 'user_initiated';
 };
 
 function toSessionReason(reason: CreateSessionParams['reason']): string {
   if (reason === 'upgrade') return AppBuilderSessionReason.Upgrade;
   if (reason === 'github_migration') return AppBuilderSessionReason.GitHubMigration;
-  if (reason === 'model_vision_change') return AppBuilderSessionReason.ModelVisionChange;
   if (reason === 'user_initiated') return AppBuilderSessionReason.UserInitiated;
   reason satisfies never;
   throw new Error(`Unhandled session reason: ${reason}`);
@@ -915,9 +898,7 @@ export async function sendMessage(input: SendMessageInput): Promise<SendMessageR
     project,
     currentSessionId,
     currentWorkerVersion ?? 'v1',
-    authToken,
-    project.model_id,
-    effectiveModel
+    authToken
   );
 
   if (decision.createNew) {
