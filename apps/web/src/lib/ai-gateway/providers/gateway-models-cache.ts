@@ -2,7 +2,7 @@ import { StoredModelSchema, type StoredModel } from '@kilocode/db';
 import * as z from 'zod';
 import { redisClient } from '@/lib/redis';
 import { createCachedFetch } from '@/lib/cached-fetch';
-import { GATEWAY_METADATA_REDIS_KEYS } from '@/lib/redis-keys';
+import { GATEWAY_METADATA_REDIS_KEYS, vercelInferenceProvidersRedisKey } from '@/lib/redis-keys';
 import type { RedisKey } from '@/lib/redis-keys';
 
 export type StoredModelMap = Record<string, StoredModel>;
@@ -43,6 +43,39 @@ export function getLanguageModelIds(models: StoredModelMap): string[] {
   return Object.values(models)
     .filter(model => (model.type ?? 'language') === 'language' && model.endpoints.length > 0)
     .map(model => model.id);
+}
+
+export function extractVercelInferenceProviderIdsFromModel(model: StoredModel): string[] {
+  return [
+    ...new Set(
+      model.endpoints.map(endpoint => endpoint.provider_name).filter(p => p !== undefined)
+    ),
+  ];
+}
+
+const VercelInferenceProvidersSchema = z.array(z.string());
+const vercelInferenceProviderFetchers = new Map<string, () => Promise<string[] | null>>();
+
+export function getCachedVercelInferenceProviderIdsForModel(
+  modelId: string
+): Promise<string[] | null> {
+  let fetchProviders = vercelInferenceProviderFetchers.get(modelId);
+  if (!fetchProviders) {
+    fetchProviders = createCachedFetch<string[] | null>(
+      async () => {
+        const raw = await redisClient.get<string>(vercelInferenceProvidersRedisKey(modelId));
+        if (raw === null) {
+          return null;
+        }
+        return VercelInferenceProvidersSchema.parse(JSON.parse(raw));
+      },
+      600_000,
+      null
+    );
+    vercelInferenceProviderFetchers.set(modelId, fetchProviders);
+  }
+
+  return fetchProviders();
 }
 
 const ModelIdsSchema = z.array(z.string());

@@ -1,5 +1,8 @@
 import { describe, it, expect } from '@jest/globals';
-import { getAnthropicProviderOptionsForVercel } from '@/lib/ai-gateway/providers/vercel';
+import {
+  getAnthropicProviderOptionsForVercel,
+  hasCompatibleVercelInferenceProvider,
+} from '@/lib/ai-gateway/providers/vercel';
 import type { GatewayRequest } from '@/lib/ai-gateway/providers/openrouter/types';
 
 describe('getAnthropicProviderOptionsForVercel', () => {
@@ -43,5 +46,27 @@ describe('getAnthropicProviderOptionsForVercel', () => {
     };
 
     expect(getAnthropicProviderOptionsForVercel(request)).toBe(undefined);
+  });
+});
+
+describe('hasCompatibleVercelInferenceProvider', () => {
+  it('accepts when a translated OpenRouter provider is available on Vercel', () => {
+    expect(hasCompatibleVercelInferenceProvider(['amazon-bedrock'], ['anthropic', 'bedrock'])).toBe(
+      true
+    );
+  });
+
+  it('rejects when none of the requested providers are available on Vercel', () => {
+    expect(hasCompatibleVercelInferenceProvider(['google-vertex'], ['anthropic', 'bedrock'])).toBe(
+      false
+    );
+  });
+
+  it('rejects an empty only list when provider data is available', () => {
+    expect(hasCompatibleVercelInferenceProvider([], ['anthropic'])).toBe(false);
+  });
+
+  it('accepts when the model has no cached provider entry', () => {
+    expect(hasCompatibleVercelInferenceProvider(['google-vertex'], null)).toBe(true);
   });
 });
