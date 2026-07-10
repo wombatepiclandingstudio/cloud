@@ -25,8 +25,15 @@ import type { Provider } from '@/lib/ai-gateway/providers/types';
 import type { StoredModel } from '@kilocode/db/schema-types';
 import { EndpointsSchema, ModelsSchema } from '@kilocode/db/schema-types';
 import { redisClient } from '@/lib/redis';
-import { GATEWAY_METADATA_REDIS_KEYS, type RedisKey } from '@/lib/redis-keys';
-import { getLanguageModelIds } from '@/lib/ai-gateway/providers/gateway-models-cache';
+import {
+  GATEWAY_METADATA_REDIS_KEYS,
+  type RedisKey,
+  vercelInferenceProvidersRedisKey,
+} from '@/lib/redis-keys';
+import {
+  extractVercelInferenceProviderIdsFromModel,
+  getLanguageModelIds,
+} from '@/lib/ai-gateway/providers/gateway-models-cache';
 import { syncDirectByokModels } from '@/lib/ai-gateway/providers/direct-byok/sync-direct-byok';
 import { ATTRIBUTION_HEADERS } from '@/lib/ai-gateway/providers/openrouter/attribution-headers';
 import { mapModelIdToVercel } from '@/lib/ai-gateway/providers/vercel/mapModelIdToVercel';
@@ -42,6 +49,19 @@ import {
  * logs for the same diff. Auto-releases on transaction commit/rollback.
  */
 const SYNC_PROVIDERS_SNAPSHOT_LOCK_KEY = 'sync-providers:snapshot';
+const VERCEL_INFERENCE_PROVIDERS_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+async function mirrorVercelInferenceProvidersToRedis(vercelModels: Record<string, StoredModel>) {
+  const pipeline = redisClient.pipeline();
+  for (const model of Object.values(vercelModels)) {
+    pipeline.set(
+      vercelInferenceProvidersRedisKey(model.id),
+      JSON.stringify(extractVercelInferenceProviderIdsFromModel(model)),
+      { ex: VERCEL_INFERENCE_PROVIDERS_TTL_SECONDS }
+    );
+  }
+  await pipeline.exec();
+}
 
 async function fetchGatewayModels(gateway: Provider) {
   const headers = {
@@ -390,7 +410,10 @@ async function mirrorToRedis(values: {
   if (values.openrouterProviders) {
     entries.push([GATEWAY_METADATA_REDIS_KEYS.openrouterProviders, values.openrouterProviders]);
   }
-  await Promise.all(entries.map(([key, value]) => redisClient.set(key, JSON.stringify(value))));
+  await Promise.all([
+    ...entries.map(([key, value]) => redisClient.set(key, JSON.stringify(value))),
+    mirrorVercelInferenceProvidersToRedis(values.vercel),
+  ]);
 }
 
 /**
