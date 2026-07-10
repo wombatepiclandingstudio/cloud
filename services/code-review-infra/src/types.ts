@@ -4,9 +4,14 @@
 
 import type { CodeReviewOrchestrator } from './code-review-orchestrator';
 import type { Owner, MCPServerConfig, CloudAgentTerminalReason } from '@kilocode/worker-utils';
+import type {
+  ReviewAgentSelection,
+  ReviewAgentsConfig,
+} from '@kilocode/worker-utils/review-agents';
 import * as z from 'zod';
 
 export type { Owner, MCPServerConfig };
+export type { ReviewAgentSelection, ReviewAgentsConfig };
 
 export type CodeReviewStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -77,6 +82,8 @@ export interface CodeReview {
   sandboxRetryAttempted?: boolean;
   /** Provider-reported repository storage size, formatted for log correlation. */
   repositorySize?: string | null;
+  /** Forward-shaped review agent selections (only agents[0] consumed today). */
+  reviewAgents?: ReviewAgentsConfig;
 }
 
 export interface CodeReviewStatusResponse {
@@ -144,6 +151,8 @@ export interface CodeReviewRequest {
   previousCloudAgentSessionId?: string;
   /** Provider-reported repository storage size, formatted for log correlation. */
   repositorySize?: string | null;
+  /** Forward-shaped review agent selections (only agents[0] consumed today). */
+  reviewAgents?: ReviewAgentsConfig;
 }
 
 export interface CodeReviewResponse {

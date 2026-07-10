@@ -22,6 +22,10 @@ import {
   fetchGitHubRepositorySize,
 } from '@/lib/integrations/platforms/github/adapter';
 import type { GitHubAppType } from '@/lib/integrations/platforms/github/app-selector';
+import type {
+  ReviewAgentSelection,
+  ReviewAgentsConfig,
+} from '@kilocode/worker-utils/review-agents';
 import {
   findKiloReviewNote,
   fetchMRInlineComments,
@@ -122,6 +126,13 @@ export type SessionInput = {
   gateThreshold?: 'off' | 'all' | 'warning' | 'critical';
 };
 
+/**
+ * Review agent selection wire contract shared with the code-review Worker. Defined once
+ * in `@kilocode/worker-utils/review-agents` so producer and consumer cannot drift as
+ * council mode adds fields. See that module for the forward-plumbing notes.
+ */
+export type { ReviewAgentSelection, ReviewAgentsConfig };
+
 export type CodeReviewPayload = {
   reviewId: string;
   attemptId?: string;
@@ -133,6 +144,14 @@ export type CodeReviewPayload = {
   previousCloudAgentSessionId?: string;
   /** Provider-reported repository storage size, formatted for log correlation. */
   repositorySize?: string | null;
+  /**
+   * Forward-shaped review agent selections. Built for every review (standard = a single
+   * `'standard'` agent). Only `agents[0]` is consumed today; the rest is plumbing for
+   * council mode. Required on the producer output so no return path can silently omit
+   * it; it stays optional on the Worker request and persisted state for rolling-deploy
+   * and in-flight compatibility.
+   */
+  reviewAgents: ReviewAgentsConfig;
 };
 
 /**
@@ -271,12 +290,15 @@ export async function prepareReviewPayload(
           }
         );
         const authToken = generateApiToken(user, { botId: 'reviewer' });
+        // Single source for the standard reviewer's model so the session input and the
+        // forward-shaped `reviewAgents[0]` can never drift apart.
+        const standardModel = config.model_slug || DEFAULT_CODE_REVIEW_MODEL;
         const sessionInput: SessionInput = {
           gitUrl: `https://bitbucket.org/${workspaceSlug.data}/${repositorySlug.data}.git`,
           kilocodeOrganizationId: owner.id,
           prompt,
           mode: DEFAULT_CODE_REVIEW_MODE as 'code',
-          model: config.model_slug || DEFAULT_CODE_REVIEW_MODEL,
+          model: standardModel,
           variant: config.thinking_effort ?? undefined,
           upstreamBranch: review.head_ref,
           platform: PLATFORM.BITBUCKET,
@@ -287,6 +309,20 @@ export async function prepareReviewPayload(
           bitbucketIntegrationId: integration.id,
           bitbucketPullRequestId: review.pr_number,
           bitbucketExpectedHeadSha: expectedHeadSha.data,
+        };
+
+        // Forward-shaped agent selections, built for every review (see GitHub/GitLab
+        // path below). Today this is always a single 'standard' agent mirroring the
+        // session's model/effort; council mode will populate one entry per specialist.
+        const reviewAgents: ReviewAgentsConfig = {
+          reviewType: 'standard',
+          agents: [
+            {
+              role: 'standard',
+              model: standardModel,
+              thinkingEffort: config.thinking_effort ?? null,
+            },
+          ],
         };
 
         logExceptInTest('[prepareReviewPayload] Prepared Bitbucket payload', {
@@ -305,6 +341,7 @@ export async function prepareReviewPayload(
           sessionInput,
           owner,
           repositorySize: null,
+          reviewAgents,
         };
       }
       case PLATFORM.GITHUB:
@@ -697,6 +734,9 @@ export async function prepareReviewPayload(
     // GitHub: uses githubRepo (owner/repo format) + githubToken
     // GitLab: uses gitUrl (full HTTPS URL) + gitToken
     const variant = config.thinking_effort ?? undefined;
+    // Single source for the standard reviewer's model so the session input and the
+    // forward-shaped `reviewAgents[0]` can never drift apart.
+    const standardModel = config.model_slug || DEFAULT_CODE_REVIEW_MODEL;
     const gateThreshold = config.gate_threshold ?? 'off';
     const githubCheckoutRef = getGitHubPullRequestCheckoutRef(review.pr_number);
     const sessionInput: SessionInput =
@@ -709,7 +749,7 @@ export async function prepareReviewPayload(
             kilocodeOrganizationId: owner.type === 'org' ? owner.id : undefined,
             prompt,
             mode: DEFAULT_CODE_REVIEW_MODE as 'code',
-            model: config.model_slug || DEFAULT_CODE_REVIEW_MODEL,
+            model: standardModel,
             variant,
             upstreamBranch: review.head_ref,
           }
@@ -722,7 +762,7 @@ export async function prepareReviewPayload(
               kilocodeOrganizationId: owner.type === 'org' ? owner.id : undefined,
               prompt,
               mode: DEFAULT_CODE_REVIEW_MODE as 'code',
-              model: config.model_slug || DEFAULT_CODE_REVIEW_MODEL,
+              model: standardModel,
               variant,
               upstreamBranch: review.head_ref,
               ...(gateThreshold !== 'off' ? { gateThreshold } : {}),
@@ -735,11 +775,25 @@ export async function prepareReviewPayload(
               kilocodeOrganizationId: owner.type === 'org' ? owner.id : undefined,
               prompt,
               mode: DEFAULT_CODE_REVIEW_MODE as 'code',
-              model: config.model_slug || DEFAULT_CODE_REVIEW_MODEL,
+              model: standardModel,
               variant,
               upstreamBranch: githubCheckoutRef,
               ...(gateThreshold !== 'off' ? { gateThreshold } : {}),
             };
+
+    // Forward-shaped agent selections. Today this is always a single 'standard' agent
+    // mirroring the session's model/effort; council mode will populate one entry per
+    // specialist. agents[0].model is kept identical to sessionInput.model above.
+    const reviewAgents: ReviewAgentsConfig = {
+      reviewType: 'standard',
+      agents: [
+        {
+          role: 'standard',
+          model: standardModel,
+          thinkingEffort: config.thinking_effort ?? null,
+        },
+      ],
+    };
 
     // Log the session input for GitLab
     if (platform === 'gitlab') {
@@ -769,6 +823,7 @@ export async function prepareReviewPayload(
       owner,
       previousCloudAgentSessionId,
       repositorySize,
+      reviewAgents,
     };
 
     logExceptInTest('[prepareReviewPayload] Prepared payload', {
