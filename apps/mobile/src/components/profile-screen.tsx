@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import * as Application from 'expo-application';
 import { type Href, useRouter } from 'expo-router';
 import {
+  Building2,
   GitPullRequest,
   KeyRound,
   Lock,
@@ -17,6 +18,7 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanim
 
 import { RestorePurchasesButton } from '@/components/kilo-pass/restore-purchases-button';
 import { NotificationsCard } from '@/components/notifications-card';
+import { ActionTile } from '@/components/profile-action-tile';
 import { CreditsCard } from '@/components/profile-credits-card';
 import { ScreenHeader } from '@/components/screen-header';
 import { ConfigureRow } from '@/components/ui/configure-row';
@@ -34,38 +36,6 @@ import { useTRPC } from '@/lib/trpc';
 
 function providerIcon(_provider: string) {
   return KeyRound;
-}
-
-function ActionTile({
-  icon: Icon,
-  label,
-  color,
-  onPress,
-  destructive,
-  disabled,
-}: {
-  icon: React.ComponentType<{ size?: number; color?: string }>;
-  label: string;
-  color: string;
-  onPress: () => void;
-  destructive?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <Pressable
-      className={`flex-1 items-center gap-2 rounded-lg bg-secondary py-4 active:opacity-70 ${disabled ? 'opacity-50' : ''}`}
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: Boolean(disabled) }}
-    >
-      <Icon size={20} color={color} />
-      <Text className={`text-sm ${destructive ? 'text-destructive' : 'text-muted-foreground'}`}>
-        {label}
-      </Text>
-    </Pressable>
-  );
 }
 
 export function ProfileScreen() {
@@ -91,6 +61,9 @@ export function ProfileScreen() {
   const agentScope = organizationContextLoaded
     ? getProfileAgentScope(organizationId, orgs, organizationsFetching)
     : undefined;
+  const selectedOrg = orgs?.find(org => org.organizationId === organizationId);
+  const orgRole = selectedOrg?.role;
+  const orgName = selectedOrg?.organizationName;
 
   const { userId } = useCurrentUserId({ enabled: isAuthenticated });
 
@@ -184,6 +157,26 @@ export function ProfileScreen() {
             }}
           />
         </View>
+
+        {/* Organization */}
+        {organizationId != null && (
+          <View className="mt-6 gap-3">
+            <Text variant="small" className="uppercase tracking-wide text-muted-foreground">
+              Organization
+            </Text>
+            <ConfigureRow
+              icon={Building2}
+              title={orgRole === 'member' ? 'View organization' : 'Manage organization'}
+              subtitle={orgName}
+              className="rounded-lg bg-secondary px-3"
+              disabled={!orgRole}
+              last
+              onPress={() => {
+                router.push('/(app)/(tabs)/(3_profile)/organization' as Href);
+              }}
+            />
+          </View>
+        )}
 
         {/* Linked accounts */}
         <Animated.View className="mt-6 gap-3" layout={LinearTransition}>
