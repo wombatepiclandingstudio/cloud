@@ -4,6 +4,7 @@ import { Bot, ChevronRight, Loader2 } from 'lucide-react-native';
 import Animated, { FadeIn, LinearTransition } from 'react-native-reanimated';
 import { type Part, type StoredMessage, type ToolPart } from 'cloud-agent-sdk';
 
+import { SpinningIcon } from '@/components/ui/spinning-icon';
 import { Text } from '@/components/ui/text';
 import { type ThemeColors, useThemeColors } from '@/lib/hooks/use-theme-colors';
 
@@ -143,7 +144,7 @@ export function ChildSessionSection({
         />
 
         {isRunning ? (
-          <Loader2 size={16} color={colors.agentSky} />
+          <SpinningIcon icon={Loader2} size={16} color={colors.agentSky} />
         ) : (
           <Bot size={16} color={colors.agentSky} />
         )}
@@ -278,7 +279,7 @@ function getStatusBorderColor(status: string, colors: ThemeColors): string {
   if (status === 'completed') {
     return colors.good;
   }
-  return colors.agentSky;
+  return colors.info;
 }
 
 function StatusBadge({ status }: Readonly<{ status: string }>) {
@@ -294,22 +295,22 @@ function StatusBadge({ status }: Readonly<{ status: string }>) {
 
 function getStatusBgClass(status: string): string {
   if (status === 'completed') {
-    return 'bg-green-100 dark:bg-green-900';
+    return 'bg-good-tile-bg';
   }
   if (status === 'error') {
-    return 'bg-red-100 dark:bg-red-900';
+    return 'bg-danger-tile-bg';
   }
-  return 'bg-blue-100 dark:bg-blue-900';
+  return 'bg-info-tile-bg';
 }
 
 function getStatusTextClass(status: string): string {
   if (status === 'completed') {
-    return 'text-green-700 dark:text-green-300';
+    return 'text-good';
   }
   if (status === 'error') {
-    return 'text-red-700 dark:text-red-300';
+    return 'text-destructive';
   }
-  return 'text-blue-700 dark:text-blue-300';
+  return 'text-info';
 }
 
 function truncateText(text: string, maxLength: number): string {

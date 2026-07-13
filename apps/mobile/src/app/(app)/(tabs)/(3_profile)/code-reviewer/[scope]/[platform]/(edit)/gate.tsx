@@ -1,7 +1,7 @@
 import { useLocalSearchParams } from 'expo-router';
 
 import { OptionList } from '@/components/code-reviewer/option-list';
-import { asReviewerPlatform, GATE_THRESHOLDS } from '@/lib/code-reviewer-config';
+import { GATE_THRESHOLDS, type ReviewerPlatform } from '@/lib/code-reviewer-config';
 import { useReviewConfig, useSaveReviewConfig } from '@/lib/hooks/use-code-reviewer';
 
 const DESCRIPTIONS = {
@@ -12,23 +12,19 @@ const DESCRIPTIONS = {
 } as const;
 
 export default function GateThresholdRoute() {
-  const { scope, platform: rawPlatform } = useLocalSearchParams<{
-    scope: string;
-    platform: string;
-  }>();
-  const platform = asReviewerPlatform(rawPlatform);
+  const { scope, platform } = useLocalSearchParams<{ scope: string; platform: ReviewerPlatform }>();
   const { data } = useReviewConfig(scope, platform);
   const save = useSaveReviewConfig(scope, platform);
 
   return (
     <OptionList
-      title="Merge Gate"
+      title="Merge gate"
       options={GATE_THRESHOLDS}
       selected={data?.gateThreshold}
       descriptions={DESCRIPTIONS}
-      onSelect={value => {
-        save.mutate({ gateThreshold: value });
-      }}
+      disabled={data == null}
+      // eslint-disable-next-line typescript-eslint/promise-function-async -- conflicting require-await rule
+      onSelect={value => save.mutateAsync({ gateThreshold: value })}
     />
   );
 }

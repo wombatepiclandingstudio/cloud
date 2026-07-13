@@ -1,13 +1,14 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef } from 'react';
-import { ScrollView, TextInput, View } from 'react-native';
+import { TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 
 import { ScreenHeader } from '@/components/screen-header';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Text } from '@/components/ui/text';
-import { asReviewerPlatform } from '@/lib/code-reviewer-config';
+import { TabScreenScrollView } from '@/components/tab-screen';
+import { type ReviewerPlatform } from '@/lib/code-reviewer-config';
 import { useReviewConfig, useSaveReviewConfig } from '@/lib/hooks/use-code-reviewer';
 
 // Mounted only once `data != null`, so useRef(initial) captures the real
@@ -53,21 +54,17 @@ function InstructionsEditor({
 }
 
 export default function InstructionsRoute() {
-  const { scope, platform: rawPlatform } = useLocalSearchParams<{
-    scope: string;
-    platform: string;
-  }>();
-  const platform = asReviewerPlatform(rawPlatform);
+  const { scope, platform } = useLocalSearchParams<{ scope: string; platform: ReviewerPlatform }>();
   const router = useRouter();
   const { data } = useReviewConfig(scope, platform);
   const save = useSaveReviewConfig(scope, platform);
 
   return (
     <View className="flex-1 bg-background">
-      <ScreenHeader title="Custom Instructions" />
-      <ScrollView
+      <ScreenHeader title="Custom instructions" />
+      <TabScreenScrollView
         className="flex-1 px-6"
-        contentContainerClassName="pt-4 pb-8"
+        contentContainerClassName="pt-4"
         automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
       >
@@ -89,7 +86,7 @@ export default function InstructionsRoute() {
             />
           )}
         </Animated.View>
-      </ScrollView>
+      </TabScreenScrollView>
     </View>
   );
 }

@@ -1,32 +1,26 @@
-import * as Haptics from 'expo-haptics';
 import { useLocalSearchParams } from 'expo-router';
-import { Check } from 'lucide-react-native';
-import { Pressable, ScrollView, View } from 'react-native';
+import { View } from 'react-native';
 
 import { ScreenHeader } from '@/components/screen-header';
 import { Text } from '@/components/ui/text';
-import { asReviewerPlatform, REVIEW_FOCUS_AREAS } from '@/lib/code-reviewer-config';
+import { ChoiceRow } from '@/components/ui/choice-row';
+import { TabScreenScrollView } from '@/components/tab-screen';
+import { REVIEW_FOCUS_AREAS, type ReviewerPlatform } from '@/lib/code-reviewer-config';
 import {
   useReviewConfig,
   useReviewConfigCacheReader,
   useSaveReviewConfig,
 } from '@/lib/hooks/use-code-reviewer';
-import { useThemeColors } from '@/lib/hooks/use-theme-colors';
 
 export default function FocusAreasRoute() {
-  const { scope, platform: rawPlatform } = useLocalSearchParams<{
-    scope: string;
-    platform: string;
-  }>();
-  const platform = asReviewerPlatform(rawPlatform);
-  const colors = useThemeColors();
+  const { scope, platform } = useLocalSearchParams<{ scope: string; platform: ReviewerPlatform }>();
   const { data } = useReviewConfig(scope, platform);
   const save = useSaveReviewConfig(scope, platform);
   const readConfig = useReviewConfigCacheReader(scope, platform);
   const selected = data?.focusAreas ?? [];
+  const disabled = data == null;
 
   const toggleArea = (area: string) => {
-    void Haptics.selectionAsync();
     // Read the cache at call time, not the render-time snapshot above, so
     // two rapid taps each build the next array from the latest committed
     // selection instead of dropping one another.
@@ -39,24 +33,25 @@ export default function FocusAreasRoute() {
 
   return (
     <View className="flex-1 bg-background">
-      <ScreenHeader title="Focus Areas" />
-      <ScrollView className="flex-1 px-6" contentContainerClassName="pt-4 pb-8">
+      <ScreenHeader title="Focus areas" />
+      <TabScreenScrollView className="flex-1 px-6" contentContainerClassName="pt-4">
         <Text variant="muted" className="mb-2 text-xs">
           Leave all unselected to review everything.
         </Text>
         {REVIEW_FOCUS_AREAS.map(area => (
-          <Pressable
+          <ChoiceRow
             key={area}
-            className="flex-row items-center justify-between border-b-[0.5px] border-hair-soft py-3 active:opacity-70"
+            label={area}
+            multi
+            selected={selected.includes(area)}
+            disabled={disabled}
+            className="border-b-[0.5px] border-hair-soft"
             onPress={() => {
               toggleArea(area);
             }}
-          >
-            <Text className="text-sm font-medium capitalize">{area}</Text>
-            <Check size={18} color={selected.includes(area) ? colors.foreground : 'transparent'} />
-          </Pressable>
+          />
         ))}
-      </ScrollView>
+      </TabScreenScrollView>
     </View>
   );
 }
