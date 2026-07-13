@@ -11,7 +11,7 @@ import { getSessionAccessCacheDO } from '../dos/SessionAccessCacheDO';
 import { getUserConnectionDO } from '../dos/UserConnectionDO';
 import { getSessionExport } from '../services/session-export';
 import { mapSessionEventRow, notifyUserSessionEvent } from '../session-events';
-import { stageAndEnqueue } from '../ingest/stage-and-enqueue';
+import { handleDirectIngestRequest } from '../ingest/direct-ingest';
 
 export type ApiContext = {
   Bindings: Env;
@@ -36,6 +36,16 @@ function getOptionalExecutionContext(
     }
     throw error;
   }
+}
+
+function getRequestBodyStream(request: Request): ReadableStream<Uint8Array> {
+  const body = request.body as ReadableStream<Uint8Array> | null;
+  if (body) return body;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.close();
+    },
+  });
 }
 
 function notifyUserSessionEventFromContext(
@@ -216,6 +226,8 @@ api.post('/session/:sessionId/ingest', async c => {
   }
 
   const sessionId = sessionIdParseResult.data;
+  const ingestedAt = Date.now();
+  const ingestRequestId = crypto.randomUUID();
   const kiloUserId = c.get('user_id');
   const db = getWorkerDb(c.env.HYPERDRIVE.connectionString);
 
@@ -250,20 +262,19 @@ api.post('/session/:sessionId/ingest', async c => {
 
   const ingestVersion = ingestVersionSchema.parse(c.req.query('v') ?? 0);
 
-  // Stream request body directly to R2 (zero memory)
-  const r2Key = `ingest/${kiloUserId}/${sessionId}/${crypto.randomUUID()}`;
-  await stageAndEnqueue(
-    c.env,
-    {
-      r2Key,
-      kiloUserId,
-      sessionId,
-      ingestVersion,
-    },
-    c.req.raw.body ?? new Uint8Array()
-  );
+  const result = await handleDirectIngestRequest({
+    env: c.env,
+    body: getRequestBodyStream(c.req.raw),
+    contentLength: c.req.header('content-length'),
+    kiloUserId,
+    sessionId,
+    ingestVersion,
+    ingestedAt,
+    ingestRequestId,
+    executionContext: getOptionalExecutionContext(c),
+  });
 
-  return c.json({ success: true }, 200);
+  return c.json(result.body, result.status);
 });
 
 api.get('/session/:sessionId/export', async c => {
