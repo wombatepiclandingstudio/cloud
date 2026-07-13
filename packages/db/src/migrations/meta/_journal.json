@@ -1289,6 +1289,13 @@
       "when": 1783951280560,
       "tag": "0183_exotic_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1783961455295,
+      "tag": "0184_cute_iron_monger",
+      "breakpoints": true
     }
   ]
 }
