@@ -3,7 +3,7 @@ import { type CloudStatus, type KiloSessionId, type StoredMessage } from 'cloud-
 import { type Href, useRouter } from 'expo-router';
 import { useAtomValue } from 'jotai';
 import { MessageSquare } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { toast } from 'sonner-native';
@@ -27,6 +27,8 @@ import { useInteractionHandlers } from '@/components/agents/use-interaction-hand
 import { useSessionAutoScroll } from '@/components/agents/use-session-auto-scroll';
 import { useSessionConfigSync } from '@/components/agents/use-session-config-sync';
 import { WorkingIndicator } from '@/components/agents/working-indicator';
+import { ChildSessionSheet } from '@/components/agents/child-session-sheet';
+import { PartRenderer } from '@/components/agents/part-renderer';
 import { QueryError } from '@/components/query-error';
 import { ScreenHeader } from '@/components/screen-header';
 import { Button } from '@/components/ui/button';
@@ -71,6 +73,10 @@ export function SessionDetailContent({
 }: Readonly<SessionDetailContentProps>) {
   const manager = useSessionManager();
   const router = useRouter();
+  const [childSession, setChildSession] = useState<{
+    sessionId: KiloSessionId;
+    title: string;
+  }>();
 
   const messages = useAtomValue(manager.atoms.messagesList);
   const isLoading = useAtomValue(manager.atoms.isLoading);
@@ -87,6 +93,7 @@ export function SessionDetailContent({
   const activePermission = useAtomValue(manager.atoms.activePermission);
   const totalCost = useAtomValue(manager.atoms.totalCost);
   const getChildMessages = useAtomValue(manager.atoms.childMessages);
+  const getChildSessionHydrationState = useAtomValue(manager.atoms.childSessionHydrationState);
   const pendingMessages = useAtomValue(manager.atoms.pendingMessages);
   const activeSessionType = useAtomValue(manager.atoms.activeSessionType);
   const remoteModelState = useAtomValue(manager.atoms.remoteModelState);
@@ -228,6 +235,14 @@ export function SessionDetailContent({
     return -1;
   }, [messages]);
 
+  const handleOpenChildSession = useCallback(
+    (childSessionId: KiloSessionId, childTitle: string) => {
+      setChildSession({ sessionId: childSessionId, title: childTitle });
+      void manager.hydrateChildSession(childSessionId);
+    },
+    [manager]
+  );
+
   const renderItem = useCallback(
     ({ item, index }: { item: StoredMessage; index: number }) => (
       <MessageBubble
@@ -236,9 +251,16 @@ export function SessionDetailContent({
         isSessionStreaming={isStreaming}
         getChildMessages={getChildMessages}
         defaultReasoningExpanded={reasoningDefaultExpanded}
+        onOpenChildSession={handleOpenChildSession}
       />
     ),
-    [lastAssistantIndex, isStreaming, getChildMessages, reasoningDefaultExpanded]
+    [
+      lastAssistantIndex,
+      isStreaming,
+      getChildMessages,
+      reasoningDefaultExpanded,
+      handleOpenChildSession,
+    ]
   );
 
   const handleStop = useCallback(async () => {
@@ -382,6 +404,23 @@ export function SessionDetailContent({
       )}
 
       <View style={{ height: bottom }} className="bg-background" />
+
+      {childSession ? (
+        <ChildSessionSheet
+          sessionId={childSession.sessionId}
+          title={childSession.title}
+          getChildMessages={getChildMessages}
+          hydrationState={getChildSessionHydrationState(childSession.sessionId)}
+          renderPart={props => <PartRenderer {...props} />}
+          onOpenChildSession={handleOpenChildSession}
+          onRetry={() => {
+            void manager.hydrateChildSession(childSession.sessionId);
+          }}
+          onClose={() => {
+            setChildSession(undefined);
+          }}
+        />
+      ) : null}
     </View>
   );
 
