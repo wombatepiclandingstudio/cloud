@@ -190,24 +190,49 @@ export function CloudSidebarLayout({ organizationId, children }: CloudSidebarLay
           </SheetContent>
         </Sheet>
 
-        {/* Desktop Sidebar */}
-        <div className="hidden w-80 shrink-0 border-r lg:block">
-          <ChatSidebar
-            sessions={sessions}
-            currentSessionId={currentSessionId}
-            organizationId={organizationId}
-            onDeleteSession={handleDeleteSession}
-            onRenameSession={handleRenameSession}
-            activeSessions={activeSessions}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            platformFilter={platformFilter}
-            onPlatformChange={setPlatformFilter}
-            projectFilter={projectFilter}
-            onProjectChange={setProjectFilter}
-            recentProjects={recentProjects}
-          />
-        </div>
+        {/* Desktop Sidebar — minimized (narrow rail) by default; expand on demand */}
+        {collapsed ? (
+          <div className="hidden w-12 shrink-0 border-r lg:flex flex-col items-center py-3">
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => setCollapsed(false)}
+              title="Show sessions"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : (
+          <div className="hidden w-80 shrink-0 border-r lg:flex lg:flex-col">
+            <div className="flex h-10 items-center justify-end border-b px-2">
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => setCollapsed(true)}
+                title="Hide sessions"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <ChatSidebar
+                sessions={sessions}
+                currentSessionId={currentSessionId}
+                organizationId={organizationId}
+                onDeleteSession={handleDeleteSession}
+                onRenameSession={handleRenameSession}
+                activeSessions={activeSessions}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                platformFilter={platformFilter}
+                onPlatformChange={setPlatformFilter}
+                projectFilter={projectFilter}
+                onProjectChange={setProjectFilter}
+                recentProjects={recentProjects}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Main Content */}
         <div className="h-full flex-1 overflow-hidden">{children}</div>
