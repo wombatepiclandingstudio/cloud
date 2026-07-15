@@ -62,7 +62,6 @@ export default function OrganizationAppSidebar({
 
   // Feature flags
   const isAutoTriageFeatureEnabled = useFeatureFlagEnabled('auto-triage-feature');
-  const isGastownEnabled = useFeatureFlagEnabled('gastown-access');
   const isDevelopment = process.env.NODE_ENV === 'development';
 
   // Get current organization role and data
