@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -14,7 +15,11 @@ import {
 import { Label } from '@/components/ui/label';
 import { AlertCircle, FileCode } from 'lucide-react';
 import { toast } from 'sonner';
-import { MonacoJsonEditor } from './MonacoJsonEditor';
+// Monaco is a large dependency — only load it when the dialog opens.
+const MonacoJsonEditor = dynamic(
+  () => import('./MonacoJsonEditor').then(mod => mod.MonacoJsonEditor),
+  { ssr: false }
+);
 
 type EnvVarsDialogProps = {
   value: Record<string, string>;

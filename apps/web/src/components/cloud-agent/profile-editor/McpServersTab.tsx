@@ -2,6 +2,7 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import {
   Loader2,
@@ -21,7 +22,11 @@ import { InlineDeleteConfirmation } from '@/components/ui/inline-delete-confirma
 import { cn } from '@/lib/utils';
 import { MASKED_SECRET_VALUE } from '@kilocode/cloud-agent-profile';
 import { useProfileMutations, type ProfileMcpServer } from '@/hooks/useCloudAgentProfiles';
-import { MonacoJsonEditor } from '../MonacoJsonEditor';
+// Monaco is a large dependency — only load it when the editor is shown.
+const MonacoJsonEditor = dynamic(
+  () => import('../MonacoJsonEditor').then(mod => mod.MonacoJsonEditor),
+  { ssr: false }
+);
 
 function countSecretValues(server: ProfileMcpServer): number {
   if (server.type === 'local' && 'command' in server.config) {

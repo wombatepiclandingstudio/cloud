@@ -242,8 +242,8 @@ export function SessionsPageContent() {
                   <Link
                     href={
                       organizationId
-                        ? `/organizations/${organizationId}/cloud/chat?sessionId=${selectedSession.sessionId}`
-                        : `/cloud/chat?sessionId=${selectedSession.sessionId}`
+                        ? `/organizations/${organizationId}/agent-builder/chat?sessionId=${selectedSession.sessionId}`
+                        : `/agent-builder/chat?sessionId=${selectedSession.sessionId}`
                     }
                     onClick={() => setIsDialogOpen(false)}
                   >

@@ -15,11 +15,8 @@ import {
   Database,
   Users,
   CreditCard,
-  Cloud,
   Key,
-  List,
   Shield,
-  Plus,
   ListChecks,
   Wrench,
   Webhook,
@@ -65,7 +62,7 @@ export default function OrganizationAppSidebar({
 
   // Feature flags
   const isAutoTriageFeatureEnabled = useFeatureFlagEnabled('auto-triage-feature');
-  const isAppBuilderEnabled = useFeatureFlagEnabled('app-builder-feature');
+  const isGastownEnabled = useFeatureFlagEnabled('gastown-access');
   const isDevelopment = process.env.NODE_ENV === 'development';
 
   // Get current organization role and data
@@ -201,24 +198,10 @@ export default function OrganizationAppSidebar({
     url: string;
     className?: string;
   }> = [
-    ...(isAppBuilderEnabled || isDevelopment
-      ? [
-          {
-            title: 'App Builder',
-            icon: Plus,
-            url: `/organizations/${organizationId}/app-builder`,
-          },
-        ]
-      : []),
     {
-      title: 'Cloud Agent',
-      icon: Cloud,
-      url: `/organizations/${organizationId}/cloud`,
-    },
-    {
-      title: 'Sessions',
-      icon: List,
-      url: `/organizations/${organizationId}/cloud/sessions`,
+      title: 'Agent & Builder',
+      icon: Bot,
+      url: `/organizations/${organizationId}/agent-builder`,
     },
     {
       title: 'Webhooks / Triggers',

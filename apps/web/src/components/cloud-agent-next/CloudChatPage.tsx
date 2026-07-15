@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useSearchParams } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -25,7 +26,11 @@ import { QuestionContextProvider } from './QuestionContext';
 import { PermissionCard, PermissionContextProvider } from './PermissionCard';
 import { SuggestionContextProvider } from './SuggestionCard';
 import { SessionContinuationPanel } from './SessionContinuationPanel';
-import { CloudAgentTerminalPane } from './CloudAgentTerminalDock';
+// xterm is heavy and only needed when a terminal tab is opened — load lazily.
+const CloudAgentTerminalPane = dynamic(
+  () => import('./CloudAgentTerminalDock').then(mod => mod.CloudAgentTerminalPane),
+  { ssr: false }
+);
 import { CloudAgentWorkspaceTabs } from './CloudAgentWorkspaceTabs';
 import {
   CHAT_TAB_ID,

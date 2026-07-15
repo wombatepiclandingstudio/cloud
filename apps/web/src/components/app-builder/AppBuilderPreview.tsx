@@ -9,6 +9,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef, memo } from 'react';
+import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import {
   Loader2,
@@ -29,8 +30,14 @@ import { useTRPC } from '@/lib/trpc/utils';
 import { useQuery } from '@tanstack/react-query';
 import { DEPLOYMENT_POLL_INTERVAL_MS } from '@/lib/user-deployments/constants';
 import { isDeploymentInProgress, type BuildStatus } from '@/lib/user-deployments/types';
-import { CloneDialog } from './CloneDialog';
-import { MigrateToGitHubDialog } from './MigrateToGitHubDialog';
+// Dialogs are only shown on demand, so lazy-load them.
+const CloneDialog = dynamic(() => import('./CloneDialog').then(mod => mod.CloneDialog), {
+  ssr: false,
+});
+const MigrateToGitHubDialog = dynamic(
+  () => import('./MigrateToGitHubDialog').then(mod => mod.MigrateToGitHubDialog),
+  { ssr: false }
+);
 import { useProject } from './ProjectSession';
 import { toast } from 'sonner';
 
