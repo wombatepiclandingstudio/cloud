@@ -1,22 +1,10 @@
-import { Suspense } from 'react';
-import { SessionsPageContent } from '@/app/(app)/cloud/sessions/SessionsPageContent';
-import { OrganizationByPageLayout } from '@/components/organizations/OrganizationByPageLayout';
+import { redirect } from 'next/navigation';
 
-export default async function OrganizationSessionsPage({
-  params,
-}: {
+type Props = {
   params: Promise<{ id: string }>;
-}) {
-  return (
-    <OrganizationByPageLayout
-      params={params}
-      render={() => (
-        <Suspense
-          fallback={<div className="flex h-screen items-center justify-center">Loading...</div>}
-        >
-          <SessionsPageContent />
-        </Suspense>
-      )}
-    />
-  );
+};
+
+export default async function OrganizationSessionsPage({ params }: Props) {
+  const { id } = await params;
+  redirect(`/organizations/${decodeURIComponent(id)}/agent-builder/chat`);
 }

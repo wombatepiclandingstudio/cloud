@@ -1,14 +1,7 @@
 'use client';
 
-import { Suspense } from 'react';
-import { SessionsPageContent } from './SessionsPageContent';
+import { redirect } from 'next/navigation';
 
 export default function SessionsPage() {
-  return (
-    <Suspense
-      fallback={<div className="flex h-screen items-center justify-center">Loading...</div>}
-    >
-      <SessionsPageContent />
-    </Suspense>
-  );
+  redirect('/agent-builder/chat');
 }

@@ -1,32 +1,10 @@
-import { OrganizationByPageLayout } from '@/components/organizations/OrganizationByPageLayout';
-import { getUserFromAuthOrRedirect } from '@/lib/user/server';
-import { isFeatureFlagEnabledOrDevelopment } from '@/lib/posthog-feature-flags';
-import { NewSessionPanel } from '@/components/cloud-agent-next/NewSessionPanel';
+import { redirect } from 'next/navigation';
 
-export default async function OrganizationCloudPage({
-  params,
-}: {
+type Props = {
   params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const organizationId = decodeURIComponent(id);
-  await getUserFromAuthOrRedirect(
-    `/users/sign_in?callbackPath=${encodeURIComponent(`/organizations/${organizationId}/cloud`)}`
-  );
-  const isDevcontainerAvailable = await isFeatureFlagEnabledOrDevelopment(
-    'cloud-agent-devcontainer',
-    organizationId
-  );
+};
 
-  return (
-    <OrganizationByPageLayout
-      params={params}
-      render={({ organization }) => (
-        <NewSessionPanel
-          organizationId={organization.id}
-          isDevcontainerAvailable={isDevcontainerAvailable}
-        />
-      )}
-    />
-  );
+export default async function OrganizationCloudPage({ params }: Props) {
+  const { id } = await params;
+  redirect(`/organizations/${decodeURIComponent(id)}/agent-builder`);
 }

@@ -1,7 +1,9 @@
 'use client';
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { Button } from '@/components/ui/button';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useSetAtom } from 'jotai';
 import { toast } from 'sonner';
@@ -49,6 +51,8 @@ export function CloudSidebarLayout({ organizationId, children }: CloudSidebarLay
     initializeWithValue: false,
   });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  // Left session panel is minimized (narrow rail) by default; expand on demand.
+  const [collapsed, setCollapsed] = useState(true);
   const repoUpdatedSince = useMemo(() => startOfDay(subDays(new Date(), 30)).toISOString(), []);
 
   const createdOnPlatform = useMemo(() => {
