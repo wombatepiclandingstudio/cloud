@@ -95,8 +95,39 @@ describe('buildCouncilOrchestratorPrompt', () => {
     expect(prompt).toContain('subagent_type "security"');
     expect(prompt).toContain('subagent_type "performance"');
     expect(prompt).toContain('BASE REVIEW CONTEXT');
-    // Coordinator must not compute the decision itself.
-    expect(prompt.toLowerCase()).toContain('do not compute an overall decision');
+    // Coordinator must not author an overall decision anywhere — code owns it (avoids the
+    // model-derived PR decision diverging from the fail-closed, coverage-checked one).
+    expect(prompt).toContain('Do NOT compute or render an overall');
+  });
+
+  it('instructs the coordinator to publish the aggregated review + a council voting table', () => {
+    const prompt = buildCouncilOrchestratorPrompt({
+      basePrompt: 'BASE',
+      specialists: [
+        specialist({ id: 'security', name: 'Security' }),
+        specialist({ id: 'performance', name: 'Performance', role: 'performance' }),
+      ],
+      aggregationStrategy: 'majority',
+    });
+
+    // Owns publishing (specialists are read-only), following the base publication instructions.
+    expect(prompt).toContain('YOU publish the review');
+    expect(prompt.toLowerCase()).toContain('publication instructions');
+    // Council voting table in the summary, with vote icons.
+    expect(prompt).toContain('## Council review');
+    expect(prompt).toContain('Specialist | Model | Vote | Findings');
+    expect(prompt).toContain('✅ Pass');
+    expect(prompt).toContain('⚠️ Warn');
+    expect(prompt).toContain('⛔ Block');
+    expect(prompt).toContain('➖ Abstain');
+    // Must NOT displace the required marker/standard heading (they come first); council
+    // section goes right after — so the summary-identification contract stays intact.
+    expect(prompt).toContain('the standard summary heading come FIRST');
+    expect(prompt).toContain('Immediately AFTER that standard heading');
+    // Must neutralize the base "Recommendation" field so the model can't publish a merge
+    // verdict (Merge / Address before merge) that contradicts the code-owned decision.
+    expect(prompt).toContain('must NOT assert a merge verdict');
+    expect(prompt).toContain('determined by council governance');
   });
 
   it('instructs the coordinator to narrate progress (startup, per-specialist, done)', () => {
@@ -127,5 +158,13 @@ describe('buildSpecialistAgentPrompt', () => {
     expect(prompt).toContain('security concerns');
     expect(prompt).toContain('"vote"');
     expect(prompt).toContain('findings');
+  });
+
+  it('bounds the specialist: read-only, diff-scoped, and convergent (no runaway loop)', () => {
+    const prompt = buildSpecialistAgentPrompt(specialist({ id: 'testing', name: 'Test coverage' }));
+    expect(prompt).toContain('READ-ONLY');
+    expect(prompt).toContain('Do NOT run, execute, build, or test anything');
+    expect(prompt).toContain('ONLY the changed files');
+    expect(prompt).toContain('report and STOP');
   });
 });
