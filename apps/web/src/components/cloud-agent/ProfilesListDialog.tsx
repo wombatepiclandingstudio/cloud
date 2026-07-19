@@ -204,7 +204,7 @@ export function ProfilesListDialog({
 
         <div className="flex min-h-0 flex-1">
           {/* Left panel — profile list */}
-          <div className="flex w-52 flex-shrink-0 flex-col border-r">
+          <div className="flex w-40 flex-shrink-0 flex-col border-r sm:w-52">
             <div className="min-h-0 flex-1 overflow-y-auto">
               {isLoading ? (
                 <div className="flex items-center justify-center py-8">
@@ -288,7 +288,7 @@ export function ProfilesListDialog({
           </div>
 
           {/* Right panel — detail view */}
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
             {isCreating ? (
               <NewProfilePane
                 organizationId={organizationId}
@@ -553,7 +553,8 @@ function ProfileDetailPane({
       </div>
 
       {/* Tabs */}
-      <div className="flex shrink-0 border-b">
+      <div className="min-w-0 overflow-x-auto border-b">
+        <div className="flex whitespace-nowrap">
         {(
           [
             { id: 'overview', label: 'Overview', count: null },
@@ -579,7 +580,7 @@ function ProfileDetailPane({
             key={tab.id}
             title={'title' in tab ? tab.title : undefined}
             className={cn(
-              'flex items-center gap-1 border-b-2 px-3 py-2 text-xs font-medium transition-colors',
+              'flex shrink-0 items-center gap-1 border-b-2 px-3 py-2 text-xs font-medium transition-colors',
               activeTab === tab.id
                 ? 'border-primary text-foreground'
                 : 'text-muted-foreground hover:text-foreground border-transparent'
@@ -601,10 +602,11 @@ function ProfileDetailPane({
             )}
           </button>
         ))}
+        </div>
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-w-0 flex-1 overflow-y-auto">
         {activeTab === 'overview' && (
           <OverviewTab
             profile={profile}
