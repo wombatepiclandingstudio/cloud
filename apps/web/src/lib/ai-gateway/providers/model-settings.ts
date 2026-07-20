@@ -101,15 +101,17 @@ export function getModelVariants(model: string): OpenCodeSettings['variants'] {
   if (model.includes('mistral-medium-3-5')) {
     return REASONING_VARIANTS_BINARY;
   }
-  if (model.includes('kimi-k3')) {
-    return REASONING_VARIANTS_MAX_HIGH_LOW;
-  }
   if (model.includes('kimi-k2.7-code')) {
     return REASONING_VARIANTS_THINKING_ONLY;
   }
+  if (model.includes('kimi-k2')) {
+    return REASONING_VARIANTS_BINARY;
+  }
+  if (isKimiModel(model)) {
+    return REASONING_VARIANTS_MAX_HIGH_LOW;
+  }
   if (
     isMinimaxModel(model) ||
-    isKimiModel(model) ||
     isGrok42Model(model) ||
     isQwenModel(model) ||
     isGemmaModel(model) ||
