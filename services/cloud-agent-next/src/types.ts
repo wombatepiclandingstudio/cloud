@@ -124,6 +124,8 @@ export type SandboxId =
   | `${string}__${string}`
   | `${string}__${string}__${string}`;
 
+export type AgentSandboxProvider = 'cloudflare';
+
 /** Unique identifier for a session within a sandbox */
 export type SessionId = `agent_${string}`;
 
@@ -350,6 +352,42 @@ type GetBitbucketTokenResult =
   | { success: true; token: string }
   | { success: false; reason: BitbucketTokenFailureReason };
 
+export type KiloSessionCapabilityTargets = {
+  backendBaseUrl: string;
+  providerBaseUrl: string;
+  sessionIngestBaseUrl: string;
+};
+
+export type KiloCapabilityRouteClass =
+  | 'provider_model'
+  | 'organization_models'
+  | 'backend_api'
+  | 'session_ingest';
+
+type IssueKiloSessionCapabilityResult =
+  | { success: true; capability: string }
+  | {
+      success: false;
+      reason:
+        | 'invalid_targets'
+        | 'invalid_capability'
+        | 'expired_capability'
+        | 'capability_configuration_error';
+    };
+
+type RedeemKiloSessionCapabilityResult =
+  | { success: true; authorization: string; routeClass: KiloCapabilityRouteClass }
+  | {
+      success: false;
+      reason:
+        | 'invalid_capability'
+        | 'expired_capability'
+        | 'capability_configuration_error'
+        | 'container_mismatch'
+        | 'invalid_upstream_url'
+        | 'upstream_not_allowed';
+    };
+
 export type GitTokenService = {
   getTokenForRepo(params: {
     githubRepo: string;
@@ -396,6 +434,21 @@ export type GitTokenService = {
     requestMethod: string;
     requestUrl: string;
   }): Promise<RedeemGitLabSessionCapabilityResult>;
+  issueKiloSessionCapability(params: {
+    userId: string;
+    cloudAgentSessionId: string;
+    kiloSessionId: string;
+    outboundContainerId: string;
+    userToken: string;
+    targets: KiloSessionCapabilityTargets;
+  }): Promise<IssueKiloSessionCapabilityResult>;
+  redeemKiloSessionCapability(params: {
+    capability: string;
+    outboundContainerId: string;
+    requestMethod: string;
+    requestUrl: string;
+    bootstrapKiloSessionId?: string;
+  }): Promise<RedeemKiloSessionCapabilityResult>;
 };
 
 export type Env = {
@@ -467,10 +520,14 @@ export type Env = {
   GITHUB_APP_SLUG?: string;
   /** GitHub App bot user ID for git commit email (e.g., '240665456') */
   GITHUB_APP_BOT_USER_ID?: string;
-  /** Comma-separated org IDs that use per-session sandbox containers */
+  /** Comma-separated org IDs that use per-session Cloudflare sandbox containers */
   PER_SESSION_SANDBOX_ORG_IDS?: string;
-  /** Comma-separated org IDs that use managed SCM credential containment, or `*` for all orgs */
-  MANAGED_SCM_CONTAINMENT_ORG_IDS?: string;
+  /** Comma-separated org IDs whose GitHub token uses credential containment, or `*` for all orgs */
+  GITHUB_TOKEN_CONTAINMENT_ORG_IDS?: string;
+  /** Comma-separated org IDs whose GitLab token uses credential containment, or `*` for all orgs */
+  GITLAB_TOKEN_CONTAINMENT_ORG_IDS?: string;
+  /** Comma-separated org IDs whose Kilo token uses credential containment, or `*` for all orgs */
+  KILOCODE_TOKEN_CONTAINMENT_ORG_IDS?: string;
   /** Comma-separated org IDs that receive workspace repo snapshots, or '*' for all */
   REPO_SNAPSHOT_ORG_IDS?: string;
   /**

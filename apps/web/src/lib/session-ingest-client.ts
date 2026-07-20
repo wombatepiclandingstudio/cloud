@@ -2,9 +2,13 @@ import 'server-only';
 
 import { captureException } from '@sentry/nextjs';
 import { z } from 'zod';
-import { SESSION_INGEST_WORKER_URL } from '@/lib/config.server';
+import { INTERNAL_API_SECRET, SESSION_INGEST_WORKER_URL } from '@/lib/config.server';
 import { generateInternalServiceToken } from '@/lib/tokens';
 import type { User } from '@kilocode/db/schema';
+import {
+  kiloSdkMessageHistorySchema,
+  type KiloSdkMessageHistory,
+} from '@kilocode/session-ingest-contracts';
 
 // ---------------------------------------------------------------------------
 // Zod schema (mirrors cloudflare-session-ingest SharedSessionSnapshotSchema)
@@ -110,6 +114,97 @@ export async function fetchSessionMessages(
 }
 
 // ---------------------------------------------------------------------------
+// Paginated authorized session-message history
+// ---------------------------------------------------------------------------
+
+const SessionMessagesPageResponseSchema = z.object({
+  success: z.literal(true),
+  kiloSessionId: z.string().min(1),
+  history: kiloSdkMessageHistorySchema.nullable(),
+});
+
+export type SessionMessagesPageOptions = {
+  /** Bounded by the worker's shared maximum (100). Mobile default is 50. */
+  limit?: number;
+  /** Opaque cursor returned by a previous page; requires a positive limit. */
+  before?: string;
+};
+
+export type SessionMessagesPageResult = {
+  kiloSessionId: string;
+  history: KiloSdkMessageHistory | null;
+};
+
+/**
+ * Fetch a bounded page of persisted SDK messages for any Kilo session the
+ * user owns. Mirrors the access-checked RPC the worker exposes via service
+ * binding; returns `null` for sessions the user cannot read so the tRPC
+ * router can surface a stable `NOT_FOUND`. Typed failure outcomes
+ * (`retryable_failure`, `too_large`, `invalid_data`) are passed through
+ * verbatim so the caller can distinguish retryable from non-retryable
+ * failures without inferring retry semantics client-side.
+ */
+export async function fetchSessionMessagesPage(
+  sessionId: string,
+  userId: string,
+  options: SessionMessagesPageOptions
+): Promise<SessionMessagesPageResult | null> {
+  if (!SESSION_INGEST_WORKER_URL) {
+    throw new Error('SESSION_INGEST_WORKER_URL is not configured');
+  }
+
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) {
+    params.set('limit', String(options.limit));
+  }
+  if (options.before !== undefined) {
+    params.set('before', options.before);
+  }
+
+  const query = params.toString();
+  const url = `${SESSION_INGEST_WORKER_URL}/api/session/${encodeURIComponent(sessionId)}/messages${
+    query ? `?${query}` : ''
+  }`;
+
+  const token = generateInternalServiceToken(userId);
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    const error = new Error(
+      `Session ingest messages page failed: ${response.status} ${response.statusText}${
+        errorText ? ` - ${errorText}` : ''
+      }`
+    );
+    captureException(error, {
+      tags: { source: 'session-ingest-client', endpoint: 'messagesPage' },
+      extra: { sessionId, status: response.status },
+    });
+    throw error;
+  }
+
+  const parsed = SessionMessagesPageResponseSchema.safeParse(await response.json());
+  if (!parsed.success) {
+    const error = new Error(
+      `Session ingest messages page returned an unexpected response: ${parsed.error.message}`
+    );
+    captureException(error, {
+      tags: { source: 'session-ingest-client', endpoint: 'messagesPage' },
+      extra: { sessionId, issues: parsed.error.issues },
+    });
+    throw error;
+  }
+
+  return { kiloSessionId: parsed.data.kiloSessionId, history: parsed.data.history };
+}
+
+// ---------------------------------------------------------------------------
 // Share
 // ---------------------------------------------------------------------------
 
@@ -160,6 +255,44 @@ export async function shareSession(
 
   const body = ShareResponseSchema.parse(await response.json());
   return { public_id: body.public_id };
+}
+
+// ---------------------------------------------------------------------------
+// Authorization cache invalidation
+// ---------------------------------------------------------------------------
+
+export async function invalidateOrganizationSessionAccess(
+  kiloUserId: string,
+  organizationId: string
+): Promise<void> {
+  if (!SESSION_INGEST_WORKER_URL) {
+    throw new Error('SESSION_INGEST_WORKER_URL is not configured');
+  }
+  if (!INTERNAL_API_SECRET) {
+    throw new Error('INTERNAL_API_SECRET is not configured');
+  }
+
+  const response = await fetch(`${SESSION_INGEST_WORKER_URL}/internal/session-access/invalidate`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Internal-Secret': INTERNAL_API_SECRET,
+    },
+    body: JSON.stringify({ kiloUserId, organizationId }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    const error = new Error(
+      `Session access invalidation failed: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`
+    );
+    captureException(error, {
+      tags: { source: 'session-ingest-client', endpoint: 'invalidate-session-access' },
+      extra: { kiloUserId, organizationId, status: response.status },
+    });
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

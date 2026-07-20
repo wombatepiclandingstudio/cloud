@@ -53,8 +53,8 @@ import {
 import type { GitLabCommitStatusState } from '@/lib/integrations/platforms/gitlab/adapter';
 import { getIntegrationById } from '@/lib/integrations/db/platform-integrations';
 import {
+  getValidGitLabProjectAccessToken,
   getValidGitLabToken,
-  getStoredProjectAccessToken,
 } from '@/lib/integrations/gitlab-service';
 import { captureException, captureMessage } from '@sentry/nextjs';
 import { CALLBACK_TOKEN_SECRET } from '@/lib/config.server';
@@ -75,7 +75,13 @@ import type { GitHubAppType } from '@/lib/integrations/platforms/github/app-sele
 import {
   CODE_REVIEW_TERMINAL_REASONS,
   type CodeReviewTerminalReason,
+  type CodeReviewCouncilResult,
 } from '@kilocode/db/schema-types';
+import {
+  buildCouncilReviewSection,
+  councilDecisionBlocksMerge,
+  upsertCouncilVerdictInBody,
+} from '@kilocode/worker-utils/code-review-council';
 import { isCloudAgentNextBillingErrorBody } from '@kilocode/worker-utils/cloud-agent-next-client';
 import {
   CloudAgentCallbackFailureSchema,
@@ -93,6 +99,10 @@ import type { Owner } from '@/lib/code-reviews/core';
 import { CodeReviewPlatformSchema, type CodeReviewPlatform } from '@/lib/code-reviews/core/schemas';
 import { parseCodeReviewAnalyticsManifest } from '@/lib/code-reviews/analytics/contracts';
 import { finalizeCompletedCodeReviewWithAnalytics } from '@/lib/code-reviews/analytics/db';
+import {
+  computeCouncilResultForReview,
+  finalizeCouncilResultForReview,
+} from '@/lib/code-reviews/council/finalize-council-result';
 import {
   getManualCodeReviewConfig,
   shouldPublishCodeReviewToProvider,
@@ -865,14 +875,28 @@ async function upsertModelNotFoundSummary(
 
 /**
  * Resolves a GitLab access token for a review's project.
- * Prefers a stored Project Access Token; falls back to the user's OAuth token.
+ * Uses the exact project credential when a project ID is present.
  */
 async function resolveGitLabAccessToken(
   integration: PlatformIntegration,
   projectId: number | null
 ): Promise<string> {
-  const storedPrat = projectId ? getStoredProjectAccessToken(integration, projectId) : null;
-  return storedPrat ? storedPrat.token : await getValidGitLabToken(integration);
+  let userId: string;
+  let organizationId: string | undefined;
+  if (integration.owned_by_organization_id) {
+    organizationId = integration.owned_by_organization_id;
+    const botUserId = await getBotUserId(organizationId, 'code-review');
+    if (!botUserId) throw new Error('GitLab organization has no configured acting user');
+    userId = botUserId;
+  } else if (integration.owned_by_user_id) {
+    userId = integration.owned_by_user_id;
+  } else {
+    throw new Error('GitLab integration has no owner');
+  }
+  const actor = { userId, ...(organizationId ? { organizationId } : {}) };
+  return projectId
+    ? await getValidGitLabProjectAccessToken(integration, projectId, actor)
+    : await getValidGitLabToken(integration, actor);
 }
 
 /**
@@ -1033,6 +1057,9 @@ export async function POST(
     let attempt: CloudAgentCodeReviewAttempt;
     let latestAttempt = await getLatestCodeReviewAttempt(reviewId);
     let analyticsCompletionApplied = false;
+    // Code-owned council outcome for a completed council run. Set on whichever completion path
+    // runs below, then used to drive the merge gate (the council LLM never sets `gateResult`).
+    let councilResult: CodeReviewCouncilResult | null = null;
 
     if (
       status === 'completed' &&
@@ -1044,6 +1071,12 @@ export async function POST(
           rawPayload.lastAssistantMessageText === undefined &&
           rawPayload.lastAssistantMessageTextTruncation?.retainedUtf8ByteLength === 0,
       });
+      // Compute once here: persisted atomically with the completion claim below AND reused to
+      // drive the merge gate. `null` for standard (non-council) runs.
+      councilResult = computeCouncilResultForReview({
+        review,
+        lastAssistantMessageText: rawPayload.lastAssistantMessageText,
+      });
       const completionResult = await finalizeCompletedCodeReviewWithAnalytics({
         codeReviewId: reviewId,
         sourceAttemptId: attemptId,
@@ -1052,6 +1085,10 @@ export async function POST(
         executionId,
         completedAt: callbackCompletedAt,
         capture,
+        // Persist the council outcome atomically with the completion claim, so a council
+        // write failure can't leave a completed council review without a result (redelivery
+        // would short-circuit on the already-terminal parent). No-op for standard runs.
+        councilResult,
       });
 
       if (completionResult.outcome !== 'applied') {
@@ -1321,6 +1358,21 @@ export async function POST(
       status === 'cancelled' &&
       isModelNotFoundCodeReviewTerminalReason(terminalReason, errorMessage);
 
+    // Non-analytics completion path only: persist the council outcome BEFORE marking the
+    // review completed. Writing it first means a `completed` council review always has a
+    // `council_result`; if this write fails it throws, the callback returns an error, and
+    // cloud-agent-next redelivers — retrying finalization — rather than leaving a completed
+    // run permanently without a result. The ANALYTICS path is handled above, where
+    // council_result is written atomically inside the completion transaction (its parent
+    // is already completed by the time control reaches here, so the redelivery-retry design
+    // would not hold on that path).
+    if (status === 'completed' && review.review_type === 'council' && !analyticsCompletionApplied) {
+      councilResult = await finalizeCouncilResultForReview({
+        review,
+        lastAssistantMessageText: rawPayload.lastAssistantMessageText,
+      });
+    }
+
     if (analyticsCompletionApplied) {
       // Parent and accepted attempt completion were claimed with analytics in one transaction.
     } else if (isModelNotFoundCancellation) {
@@ -1417,6 +1469,26 @@ export async function POST(
           )
         : undefined;
 
+    // Council decisions are code-owned (the LLM never reports a `gateResult`), so derive the gate
+    // from the computed decision. `councilGates` is the SINGLE source of truth for whether this
+    // review actually enforces a merge gate: manual runs report the decision but never block merge
+    // (GitHub has no check run; GitLab must not post a blocking commit status either). It drives
+    // BOTH the gate result and the injected section's wording, so they can never disagree.
+    // Advisory (decision `null`) never gates; a code-`block` under Unanimous/Majority fails the check.
+    const isCompletedCouncil = status === 'completed' && review.review_type === 'council';
+    const councilGates = isCompletedCouncil && !isManualReview;
+    const effectiveGateResult = isCompletedCouncil
+      ? councilGates && councilResult && councilDecisionBlocksMerge(councilResult.decision)
+        ? 'fail'
+        : 'pass'
+      : validGateResult;
+    // Code-owned Council Review section (decision, governance, per-specialist table), injected into
+    // the summary comment below alongside the footer/history update (one fetch + one update).
+    const councilSection =
+      isCompletedCouncil && councilResult
+        ? buildCouncilReviewSection(councilResult, { gates: councilGates })
+        : null;
+
     if (integration) {
       try {
         await updatePRGateCheck(
@@ -1426,7 +1498,7 @@ export async function POST(
           errorMessage,
           providerTerminalReason,
           gitlabAccessToken,
-          validGateResult
+          effectiveGateResult
         );
       } catch (gateCheckError) {
         logExceptInTest('[code-review-status] Failed to update PR gate check:', gateCheckError);
@@ -1558,8 +1630,13 @@ export async function POST(
                   appType
                 );
                 if (existing) {
+                  // Inject the code-owned Council Review section first (no-op for non-council),
+                  // then history + footer, so the whole comment updates in a single PATCH.
+                  const baseBody = councilSection
+                    ? upsertCouncilVerdictInBody(existing.body, councilSection)
+                    : existing.body;
                   const bodyWithHistory = appendPreviousReviewSummaryHistory(
-                    existing.body,
+                    baseBody,
                     review.previous_summary_body,
                     review.previous_summary_head_sha,
                     {
@@ -1646,8 +1723,13 @@ export async function POST(
                   instanceUrl
                 );
                 if (existing) {
+                  // Inject the code-owned Council Review section first (no-op for non-council),
+                  // then history + footer, so the whole note updates in a single PUT.
+                  const baseBody = councilSection
+                    ? upsertCouncilVerdictInBody(existing.body, councilSection)
+                    : existing.body;
                   const bodyWithHistory = appendPreviousReviewSummaryHistory(
-                    existing.body,
+                    baseBody,
                     review.previous_summary_body,
                     review.previous_summary_head_sha
                   );

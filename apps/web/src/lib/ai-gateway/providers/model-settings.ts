@@ -4,7 +4,7 @@ import { isKimiModel } from '@/lib/ai-gateway/providers/moonshotai';
 import { isOpenAiModel } from '@/lib/ai-gateway/providers/openai';
 import { isQwenModel } from '@/lib/ai-gateway/providers/qwen';
 import { seed_20_code_free_model } from '@/lib/ai-gateway/providers/seed';
-import { isGrokModel, isGrokToggleableReasoningModel } from '@/lib/ai-gateway/providers/xai';
+import { isGrokModel, isGrok42Model, isGrok45Model } from '@/lib/ai-gateway/providers/xai';
 import { isGlmModel } from '@/lib/ai-gateway/providers/zai';
 import type {
   CustomLlmProvider,
@@ -16,6 +16,8 @@ import { ReasoningEffortSchema } from '@kilocode/db/schema-types';
 import { isDeepseekModel } from '@/lib/ai-gateway/providers/deepseek';
 import { isMinimaxModel } from '@/lib/ai-gateway/providers/minimax';
 import type { DirectUserByokInferenceProviderId } from '@/lib/ai-gateway/providers/openrouter/inference-provider-id';
+import { isMuseModel } from '@/lib/ai-gateway/providers/meta';
+import { kat_coder_pro_v2_5_free_model } from '@/lib/ai-gateway/providers/streamlake';
 
 const REASONING_VARIANTS_THINKING_ONLY = {
   thinking: { reasoning: { enabled: true, effort: 'high' } },
@@ -32,9 +34,20 @@ export const REASONING_VARIANTS_LOW_MEDIUM_HIGH = {
   high: { reasoning: { enabled: true, effort: 'high' } },
 } as const;
 
+export const REASONING_VARIANTS_MAX_HIGH_LOW = {
+  max: { reasoning: { enabled: true, effort: 'max' } },
+  high: { reasoning: { enabled: true, effort: 'high' } },
+  low: { reasoning: { enabled: true, effort: 'low' } },
+} as const;
+
 export const REASONING_VARIANTS_MINIMAL_LOW_MEDIUM_HIGH = {
   minimal: { reasoning: { enabled: true, effort: 'minimal' } },
   ...REASONING_VARIANTS_LOW_MEDIUM_HIGH,
+} as const;
+
+export const REASONING_VARIANTS_NONE_MINIMAL_LOW_MEDIUM_HIGH = {
+  none: { reasoning: { enabled: false, effort: 'none' } },
+  ...REASONING_VARIANTS_MINIMAL_LOW_MEDIUM_HIGH,
 } as const;
 
 export const REASONING_VARIANTS_NONE_LOW_MEDIUM_HIGH = {
@@ -88,13 +101,16 @@ export function getModelVariants(model: string): OpenCodeSettings['variants'] {
   if (model.includes('mistral-medium-3-5')) {
     return REASONING_VARIANTS_BINARY;
   }
+  if (model.includes('kimi-k3')) {
+    return REASONING_VARIANTS_MAX_HIGH_LOW;
+  }
   if (model.includes('kimi-k2.7-code')) {
     return REASONING_VARIANTS_THINKING_ONLY;
   }
   if (
     isMinimaxModel(model) ||
     isKimiModel(model) ||
-    isGrokToggleableReasoningModel(model) ||
+    isGrok42Model(model) ||
     isQwenModel(model) ||
     isGemmaModel(model) ||
     model.includes('mimo')
@@ -107,11 +123,14 @@ export function getModelVariants(model: string): OpenCodeSettings['variants'] {
   if (model.startsWith('inception/mercury-2')) {
     return REASONING_VARIANTS_INSTANT_LOW_MEDIUM_HIGH;
   }
-  if (isStepModel(model)) {
+  if (isStepModel(model) || isGrok45Model(model)) {
     return REASONING_VARIANTS_LOW_MEDIUM_HIGH;
   }
   if (isDeepseekModel(model) || isGlmModel(model)) {
     return REASONING_VARIANTS_NONE_HIGH_XHIGH;
+  }
+  if (isMuseModel(model)) {
+    return REASONING_VARIANTS_NONE_MINIMAL_LOW_MEDIUM_HIGH;
   }
   return undefined;
 }
@@ -120,8 +139,10 @@ export function getAiSdkProvider(
   model: string,
   directProviderId: DirectUserByokInferenceProviderId | null
 ): Exclude<CustomLlmProvider, 'openrouter' /*the default*/> | undefined {
-  if (seed_20_code_free_model.public_id === model) {
-    // with 'openai' (Responses API) prompt caching doesn't work
+  if (
+    seed_20_code_free_model.public_id === model ||
+    kat_coder_pro_v2_5_free_model.public_id === model
+  ) {
     return 'openai-compatible';
   }
   if (directProviderId === 'morph-byok') {
@@ -136,7 +157,7 @@ export function getAiSdkProvider(
   ) {
     return 'anthropic';
   }
-  if (isOpenAiModel(model) || isGrokModel(model)) {
+  if (isOpenAiModel(model) || isGrokModel(model) || isMuseModel(model)) {
     // OpenAI: "While Chat Completions remains supported, Responses is recommended for all new projects.""
     // xAI: "The Responses API is the recommended way to interact with xAI models."
     return 'openai';

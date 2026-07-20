@@ -275,6 +275,13 @@ describe('ExecutionError', () => {
       expect(error.code).toBe('WRAPPER_JOB_CONFLICT');
       expect(error.retryable).toBe(false);
     });
+
+    it('sandboxCapabilityUnavailable creates non-retryable error', () => {
+      const error = ExecutionError.sandboxCapabilityUnavailable('Runtime delivery is disabled');
+
+      expect(error.code).toBe('SANDBOX_CAPABILITY_UNAVAILABLE');
+      expect(error.retryable).toBe(false);
+    });
   });
 
   it('preserves cause for debugging', () => {
@@ -295,10 +302,11 @@ describe('ExecutionError', () => {
       'INVALID_REQUEST',
       'SESSION_NOT_FOUND',
       'WRAPPER_JOB_CONFLICT',
+      'SANDBOX_CAPABILITY_UNAVAILABLE',
     ];
 
     expect(retryableCodes).toHaveLength(4);
-    expect(permanentCodes).toHaveLength(3);
+    expect(permanentCodes).toHaveLength(4);
   });
 });
 
@@ -452,7 +460,7 @@ describe('ExecutionOrchestrator bootstrap execution', () => {
     await rejection;
   });
 
-  it('reports Kilo startup progress when delivering to a warm workspace', async () => {
+  it('reports provisioning and sandbox boot progress when delivering to a warm workspace', async () => {
     const { sandbox } = createMockSandbox({ workspaceWarm: true });
     const { ensureSessionReady, prompt } = stubWrapperBootstrap();
     const orchestrator = createOrchestrator(sandbox);
@@ -460,7 +468,10 @@ describe('ExecutionOrchestrator bootstrap execution', () => {
 
     await orchestrator.execute(createExecutionPlan(), { onProgress });
 
-    expect(onProgress).toHaveBeenCalledExactlyOnceWith('kilo_server', 'Starting Kilo...');
+    expect(onProgress.mock.calls).toEqual([
+      ['sandbox_provision', 'Provisioning sandbox…'],
+      ['sandbox_boot', 'Starting sandbox agent...'],
+    ]);
     expect(ensureSessionReady).toHaveBeenCalledOnce();
     expect(prompt).toHaveBeenCalledOnce();
   });

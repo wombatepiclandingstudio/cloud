@@ -1,6 +1,7 @@
 import * as z from 'zod';
 import type {
   ExecutionMode,
+  PermanentDeliveryResultCode,
   RetryableResultCode,
   SessionMessageIntent,
 } from '../execution/types.js';
@@ -75,6 +76,7 @@ const PendingFlushFailureCodeSchema = z.enum([
   'KILO_SERVER_FAILED',
   'WRAPPER_START_FAILED',
   'WRAPPER_FINALIZING',
+  'SANDBOX_CAPABILITY_UNAVAILABLE',
   'NOT_FOUND',
   'BAD_REQUEST',
   'INTERNAL',
@@ -492,6 +494,7 @@ export async function recordPendingFlushFailure(
     policy: PendingFlushPolicy;
     code?:
       | RetryableResultCode
+      | PermanentDeliveryResultCode
       | 'NOT_FOUND'
       | 'BAD_REQUEST'
       | 'INTERNAL'
@@ -501,6 +504,7 @@ export async function recordPendingFlushFailure(
     subtype?: WorkspaceFailureSubtype;
     safeFailureMessage?: string;
     retryable?: boolean;
+    scheduleTerminalizationRepair?: () => Promise<void>;
   }
 ): Promise<PendingFlushFailureResult> {
   if (options.code === undefined || options.code === 'UNKNOWN') {
@@ -557,6 +561,9 @@ export async function recordPendingFlushFailure(
     deliveryDisposition: exhausted ? 'terminalization-pending' : undefined,
   };
   await replaceStoredPendingSessionMessage(storage, message, updated);
+  if (exhausted) {
+    await options.scheduleTerminalizationRepair?.();
+  }
   if (flushFailureCode === 'SANDBOX_CONNECT_FAILED') {
     logger
       .withFields({ messageId: message.messageId, attempts, nextFlushAttemptAt })
@@ -569,6 +576,7 @@ export async function recordPendingFlushFailure(
 function isRetryableFlushCode(
   code:
     | RetryableResultCode
+    | PermanentDeliveryResultCode
     | 'NOT_FOUND'
     | 'BAD_REQUEST'
     | 'INTERNAL'

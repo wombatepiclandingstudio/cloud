@@ -39,7 +39,7 @@ import { ATTRIBUTION_HEADERS } from '@/lib/ai-gateway/providers/openrouter/attri
 import { mapModelIdToVercel } from '@/lib/ai-gateway/providers/vercel/mapModelIdToVercel';
 import {
   openRouterToVercelInferenceProviderId,
-  VercelUserByokInferenceProviderIdSchema,
+  VercelInferenceProviderIdSchema,
 } from '@/lib/ai-gateway/providers/openrouter/inference-provider-id';
 
 /**
@@ -113,7 +113,7 @@ async function fetchGatewayModels(gateway: Provider) {
 async function fetchProviders(): Promise<OpenRouterProvider[]> {
   console.log('Fetching OpenRouter providers from frontend endpoint...');
 
-  const response = await fetch(`https://openrouter.ai/api/frontend/all-providers`, {
+  const response = await fetch(`https://openrouter.ai/api/frontend/v1/all-providers`, {
     method: 'GET',
     headers: ATTRIBUTION_HEADERS,
   });
@@ -176,7 +176,7 @@ async function fetchModelsForProvider(provider: OpenRouterProvider): Promise<Ope
   return data.data.models;
 }
 
-function injectExtraUserByokModels(
+function injectExtraProviderModels(
   vercelModels: Record<string, StoredModel>,
   providerModelData: Array<{ provider: OpenRouterProvider; models: OpenRouterModel[] }>
 ) {
@@ -187,22 +187,20 @@ function injectExtraUserByokModels(
     }
   }
   for (const model of openRouterModels.values()) {
-    const vercelModel = vercelModels[mapModelIdToVercel(model.slug, false)];
+    const vercelModel = vercelModels[mapModelIdToVercel(model.slug)];
     if (!vercelModel) continue;
 
     const vercelInferenceProviders = new Set(
       vercelModel.endpoints
         .map(
           endpoint =>
-            VercelUserByokInferenceProviderIdSchema.safeParse(
-              endpoint.provider_name ?? endpoint.tag
-            ).data
+            VercelInferenceProviderIdSchema.safeParse(endpoint.provider_name ?? endpoint.tag).data
         )
         .filter(p => p !== undefined)
     );
 
     for (const providerData of providerModelData) {
-      const vercelProviderId = VercelUserByokInferenceProviderIdSchema.safeParse(
+      const vercelProviderId = VercelInferenceProviderIdSchema.safeParse(
         openRouterToVercelInferenceProviderId(providerData.provider.slug)
       ).data;
       const endpoint = vercelModel.endpoints.find(e => e.provider_name === vercelProviderId);
@@ -225,7 +223,7 @@ function injectExtraUserByokModels(
           },
         };
         console.warn(
-          '[injectExtraUserByokModels] Adding missing model to user byok provider %s: %s',
+          '[injectExtraProviderModels] Adding missing model to provider %s: %s',
           providerData.provider.name,
           m.name
         );
@@ -268,7 +266,7 @@ async function syncProviders(
     )
   );
 
-  injectExtraUserByokModels(vercelModels, providerModelData);
+  injectExtraProviderModels(vercelModels, providerModelData);
 
   const mappedExtraModels = kiloExclusiveModels
     .flatMap(kfm => {
@@ -304,7 +302,9 @@ async function syncProviders(
     });
 
   for (const extraModel of mappedExtraModels) {
-    const providerData = providerModelData.find(data => data.provider.slug === extraModel.provider);
+    const providerData = providerModelData.find(
+      data => data.provider.slug === extraModel.provider.slug
+    );
     if (providerData) {
       console.log(
         `Found existing ${extraModel.provider} provider from OpenRouter, adding extra model ${extraModel.model.slug}`
@@ -347,25 +347,22 @@ async function syncProviders(
   const allProviders = [...normalizedProviders];
 
   // Auto-detect providers referenced by extra models that aren't already present
-  const missingProviderSlugs = new Set(
+  const missingProviders = new Map(
     mappedExtraModels
       .map(m => m.provider)
-      .filter(
-        (slug): slug is NonNullable<typeof slug> =>
-          slug !== null && !allProviders.some(p => p.slug === slug)
-      )
+      .filter(provider => !allProviders.some(p => p.slug === provider.slug))
+      .map(provider => [provider.slug, provider])
   );
 
-  for (const providerSlug of missingProviderSlugs) {
-    const displayName = providerSlug.toUpperCase();
-    const iconInitials = providerSlug.slice(0, 2).toUpperCase();
+  for (const provider of missingProviders.values()) {
+    const iconInitials = provider.slug.slice(0, 2).toUpperCase();
     allProviders.push({
-      name: displayName,
-      displayName,
-      slug: providerSlug,
+      name: provider.name,
+      displayName: provider.name,
+      slug: provider.slug,
       dataPolicy: {
-        training: true,
-        retainsPrompts: true,
+        training: provider.training,
+        retainsPrompts: provider.retainsPrompts,
         canPublish: false,
       },
       headquarters: 'Unknown',
@@ -374,7 +371,7 @@ async function syncProviders(
         url: `https://placehold.co/100?text=${iconInitials}&font=roboto`,
         className: 'rounded-sm',
       },
-      models: mappedExtraModels.filter(m => m.provider === providerSlug).map(m => m.model),
+      models: mappedExtraModels.filter(m => m.provider.slug === provider.slug).map(m => m.model),
     });
   }
 
@@ -394,6 +391,8 @@ async function syncProviders(
   return result;
 }
 
+const MODEL_METADATA_REDIS_TTL_SECONDS = 7 * 24 * 60 * 60;
+
 async function mirrorToRedis(values: {
   providers: NormalizedOpenRouterResponse;
   openrouter: Record<string, StoredModel>;
@@ -411,7 +410,16 @@ async function mirrorToRedis(values: {
     entries.push([GATEWAY_METADATA_REDIS_KEYS.openrouterProviders, values.openrouterProviders]);
   }
   await Promise.all([
-    ...entries.map(([key, value]) => redisClient.set(key, JSON.stringify(value))),
+    ...entries.map(([key, value]) => {
+      const serializedValue = JSON.stringify(value);
+      if (
+        key === GATEWAY_METADATA_REDIS_KEYS.openrouterModels ||
+        key === GATEWAY_METADATA_REDIS_KEYS.vercelModels
+      ) {
+        return redisClient.set(key, serializedValue, { ex: MODEL_METADATA_REDIS_TTL_SECONDS });
+      }
+      return redisClient.set(key, serializedValue);
+    }),
     mirrorVercelInferenceProvidersToRedis(values.vercel),
   ]);
 }

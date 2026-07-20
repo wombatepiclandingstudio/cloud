@@ -18,7 +18,7 @@ import { TRPCError } from '@trpc/server';
 
 import type { Env, SandboxId } from '../types.js';
 import type { CloudAgentSession } from '../persistence/CloudAgentSession.js';
-import type { SessionMetadata } from '../persistence/session-metadata.js';
+import type { CredentialContainment, SessionMetadata } from '../persistence/session-metadata.js';
 import { logger } from '../logger.js';
 import { withDORetry } from '../utils/do-retry.js';
 import { generateSessionId, SessionService } from '../session-service.js';
@@ -27,7 +27,12 @@ import {
   recordCloudAgentSandboxIdentity,
   recordCloudAgentSessionFailure,
 } from '../telemetry/session-reports.js';
-import { generateSandboxRoutingTarget, parseOrgIdList } from '../sandbox-id.js';
+import {
+  generateSandboxRoutingTarget,
+  isOrgInList,
+  selectSandboxForNewSession,
+  type SandboxSelection,
+} from '../sandbox-id.js';
 import { resolveSharedSandboxAssignment } from '../shared-sandbox-route.js';
 import { generateKiloSessionId } from '../utils/kilo-session-id.js';
 import { createMessageId } from './message-id.js';
@@ -57,6 +62,7 @@ export type SessionRegistrationResult = {
   kiloSessionId: string;
   sandboxId: SandboxId;
   sandboxRoute?: SharedSandboxRouteMetadata;
+  sandboxProvider: SandboxSelection['provider'];
   /**
    * Canonical initial turn reserved for a later legacy initiation request.
    */
@@ -112,7 +118,7 @@ type SessionEstablishmentFailure =
   | { stage: 'transport'; code: 'do_rpc_outcome_unknown' };
 
 type NewSessionAllocation = SessionRegistrationResult & {
-  managedScmContainment: boolean;
+  credentialContainment: CredentialContainment;
   sessionService: SessionService;
   rollbackCliSession: () => Promise<void>;
 };
@@ -152,18 +158,27 @@ async function allocateNewSession(
     ctx.env
   );
 
-  const containmentOrgs = parseOrgIdList(ctx.env.MANAGED_SCM_CONTAINMENT_ORG_IDS);
   const orgId = input.options?.kilocodeOrganizationId;
-  const useManagedScmContainment =
-    input.repository.type === 'github' &&
-    input.runtime?.devcontainer !== true &&
-    (containmentOrgs.has('*') || (orgId !== undefined && containmentOrgs.has(orgId)));
+  const devcontainerRequested = input.runtime?.devcontainer === true;
+  const credentialContainment: CredentialContainment = {
+    github:
+      !devcontainerRequested &&
+      input.repository.type === 'github' &&
+      isOrgInList(ctx.env.GITHUB_TOKEN_CONTAINMENT_ORG_IDS, orgId),
+    gitlab:
+      !devcontainerRequested &&
+      input.repository.type === 'gitlab' &&
+      isOrgInList(ctx.env.GITLAB_TOKEN_CONTAINMENT_ORG_IDS, orgId),
+    kilocode:
+      !devcontainerRequested && isOrgInList(ctx.env.KILOCODE_TOKEN_CONTAINMENT_ORG_IDS, orgId),
+  };
   let sandboxId: SandboxId;
   let sandboxRoute: SharedSandboxRouteMetadata | undefined;
+  let sandboxProvider: SandboxSelection['provider'] = 'cloudflare';
   try {
     const target = await generateSandboxRoutingTarget(
       ctx.env.PER_SESSION_SANDBOX_ORG_IDS,
-      input.options?.kilocodeOrganizationId,
+      orgId,
       ctx.userId,
       cloudAgentSessionId,
       ctx.botId,
@@ -184,7 +199,16 @@ async function allocateNewSession(
         ...(assignment.suffix ? { suffix: assignment.suffix } : {}),
       };
     } else {
-      sandboxId = target.sandboxId;
+      const selection = await selectSandboxForNewSession({
+        env: ctx.env,
+        orgId,
+        userId: ctx.userId,
+        sessionId: cloudAgentSessionId,
+        botId: ctx.botId,
+        devcontainer: input.runtime?.devcontainer,
+      });
+      sandboxId = selection.sandboxId;
+      sandboxProvider = selection.provider;
     }
   } catch (error) {
     await recordCloudAgentSessionFailure(
@@ -235,8 +259,9 @@ async function allocateNewSession(
     kiloSessionId,
     sandboxId,
     sandboxRoute,
+    sandboxProvider,
     initialTurn,
-    managedScmContainment: useManagedScmContainment,
+    credentialContainment,
     sessionService,
     rollbackCliSession: async () => {
       try {
@@ -285,9 +310,10 @@ function buildSessionRegistrationCommand(
     callback: input.options?.callbackTarget ? { target: input.options.callbackTarget } : undefined,
     workspace: {
       sandboxId: allocation.sandboxId,
+      sandboxProvider: allocation.sandboxProvider,
       shallow: input.options?.shallow,
       ...(allocation.sandboxRoute ? { sandboxRoute: allocation.sandboxRoute } : {}),
-      managedScmContainment: allocation.managedScmContainment,
+      credentialContainment: allocation.credentialContainment,
       ...(input.runtime?.devcontainer ? { devcontainerRequested: true } : {}),
     },
   };
@@ -414,6 +440,7 @@ export async function startNewSession(
     cloudAgentSessionId: allocation.cloudAgentSessionId,
     kiloSessionId: allocation.kiloSessionId,
     sandboxId: allocation.sandboxId,
+    sandboxProvider: allocation.sandboxProvider,
     admission,
   };
 }

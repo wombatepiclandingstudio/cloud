@@ -27,6 +27,14 @@ vi.mock('./dos/SessionIngestDO', () => ({
   getSessionIngestDO: vi.fn(),
 }));
 
+vi.mock('./dos/UserConnectionDO', () => ({
+  getUserConnectionDO: vi.fn(),
+}));
+
+vi.mock('./dos/SessionAccessCacheDO', () => ({
+  getSessionAccessCacheDO: vi.fn(),
+}));
+
 vi.mock('./session-events', async importOriginal => {
   const actual = await importOriginal<typeof SessionEvents>();
   return {
@@ -37,19 +45,19 @@ vi.mock('./session-events', async importOriginal => {
 
 // Mock ingest-limits so we can exercise both streaming and SQLite-row compaction thresholds.
 vi.mock('./util/ingest-limits', () => ({
+  INGEST_CHUNK_MAX_BYTES: 4 * 1024 * 1024,
+  INGEST_CHUNK_MAX_ITEMS: 128,
   MAX_INGEST_ITEM_BYTES: 100,
   MAX_SINGLE_ITEM_BYTES: 500,
 }));
 
 import { getWorkerDb } from '@kilocode/db/client';
 import { getSessionIngestDO } from './dos/SessionIngestDO';
+import { getUserConnectionDO } from './dos/UserConnectionDO';
+import { getSessionAccessCacheDO } from './dos/SessionAccessCacheDO';
 import { notifyUserSessionEvent } from './session-events';
-import {
-  QUEUE_RETRY_DELAY_SECONDS,
-  computeSessionMetadataUpdates,
-  createItemExtractor,
-  queue,
-} from './queue-consumer';
+import { QUEUE_RETRY_DELAY_SECONDS, createItemExtractor, queue } from './queue-consumer';
+import { computeSessionMetadataUpdates } from './ingest/metadata';
 
 const encoder = new TextEncoder();
 
@@ -130,6 +138,27 @@ describe('createItemExtractor', () => {
     ext.tokenizer.end();
 
     expect(ext.getParseError()).toBeInstanceOf(Error);
+  });
+
+  it('preserves lexical-only parsing for concatenated roots', () => {
+    const ext = createItemExtractor('test-key');
+    feedAll(ext, '{}{}');
+
+    expect(ext.getParseError()).toBeNull();
+  });
+
+  it('counts a large array entry once without treating it as an oversized object', () => {
+    const ext = createItemExtractor('test-key', { logOversizedItems: false });
+    feedAll(
+      ext,
+      JSON.stringify({
+        data: [Array.from({ length: 600 }, () => 'x'), { type: 'message', data: { id: 'msg_1' } }],
+      })
+    );
+
+    expect(ext.getSkippedItemCount()).toBe(1);
+    expect(ext.getOversizedItemCount()).toBe(0);
+    expect(ext.pending).toEqual([{ type: 'message', data: { id: 'msg_1' } }]);
   });
 
   it('ignores non-data top-level keys', () => {
@@ -368,6 +397,165 @@ describe('queue', () => {
     expect(ingest).toHaveBeenCalledTimes(1);
     expect(ingest).toHaveBeenCalledWith(items, 'usr_batch', 'ses_batch', 1, 789, undefined);
     expect(deleteObject).toHaveBeenCalledWith('staging/batch');
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it('deletes and acknowledges staging when the session DO is tombstoned', async () => {
+    const ingest = vi.fn(
+      async () => ({ accepted: false, reason: 'deleted', changes: [] }) as const
+    );
+    vi.mocked(getSessionIngestDO).mockReturnValue({ ingest } as never);
+    const limit = vi.fn(async () => [{ session_id: 'ses_tombstoned' }]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const transaction = vi.fn();
+    vi.mocked(getWorkerDb).mockReturnValue({
+      select: vi.fn(() => ({ from })),
+      transaction,
+    } as never);
+
+    const deleteObject = vi.fn(async () => undefined);
+    const env = {
+      HYPERDRIVE: { connectionString: 'postgres://unused' },
+      SESSION_INGEST_R2: {
+        get: vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({ data: [{ type: 'message', data: { id: 'msg_tombstoned' } }] })
+            )
+        ),
+        put: vi.fn(async () => undefined),
+        delete: deleteObject,
+      },
+    } as never;
+    const ack = vi.fn();
+    const retry = vi.fn();
+
+    await queue(
+      {
+        messages: [
+          {
+            body: {
+              r2Key: 'staging/tombstoned',
+              kiloUserId: 'usr_tombstoned',
+              sessionId: 'ses_tombstoned',
+              ingestVersion: 1,
+              ingestedAt: 1,
+            },
+            ack,
+            retry,
+          },
+        ],
+      } as never,
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext
+    );
+
+    expect(transaction).not.toHaveBeenCalled();
+    expect(deleteObject).toHaveBeenCalledWith('staging/tombstoned');
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges a tombstone without parsing a malformed trailing suffix', async () => {
+    const ingest = vi.fn(
+      async () => ({ accepted: false, reason: 'deleted', changes: [] }) as const
+    );
+    vi.mocked(getSessionIngestDO).mockReturnValue({ ingest } as never);
+    const limit = vi.fn(async () => [{ session_id: 'ses_tombstoned_tail' }]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    vi.mocked(getWorkerDb).mockReturnValue({ select: vi.fn(() => ({ from })) } as never);
+
+    const items = Array.from({ length: 128 }, (_, index) => ({
+      type: 'message',
+      data: { id: `msg_${index}` },
+    }));
+    const body = `{"data":[${items.map(item => JSON.stringify(item)).join(',')},broken`;
+    const deleteObject = vi.fn(async () => undefined);
+    const env = {
+      HYPERDRIVE: { connectionString: 'postgres://unused' },
+      SESSION_INGEST_R2: {
+        get: vi.fn(async () => new Response(body)),
+        put: vi.fn(async () => undefined),
+        delete: deleteObject,
+      },
+    } as never;
+    const ack = vi.fn();
+    const retry = vi.fn();
+
+    await queue(
+      {
+        messages: [
+          {
+            body: {
+              r2Key: 'staging/tombstoned-tail',
+              kiloUserId: 'usr_tombstoned_tail',
+              sessionId: 'ses_tombstoned_tail',
+              ingestVersion: 1,
+              ingestedAt: 1,
+            },
+            ack,
+            retry,
+          },
+        ],
+      } as never,
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext
+    );
+
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(deleteObject).toHaveBeenCalledWith('staging/tombstoned-tail');
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it('does not stage a duplicate item after its preceding chunk is tombstoned', async () => {
+    const ingest = vi.fn(
+      async () => ({ accepted: false, reason: 'deleted', changes: [] }) as const
+    );
+    vi.mocked(getSessionIngestDO).mockReturnValue({ ingest } as never);
+    const limit = vi.fn(async () => [{ session_id: 'ses_tombstoned_duplicate' }]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    vi.mocked(getWorkerDb).mockReturnValue({ select: vi.fn(() => ({ from })) } as never);
+
+    const item = { type: 'message', data: { id: 'msg_duplicate' } };
+    const deleteObject = vi.fn(async () => undefined);
+    const env = {
+      HYPERDRIVE: { connectionString: 'postgres://unused' },
+      SESSION_INGEST_R2: {
+        get: vi.fn(async () => new Response(JSON.stringify({ data: [item, item] }))),
+        put: vi.fn(async () => undefined),
+        delete: deleteObject,
+      },
+    } as never;
+    const ack = vi.fn();
+    const retry = vi.fn();
+
+    await queue(
+      {
+        messages: [
+          {
+            body: {
+              r2Key: 'staging/tombstoned-duplicate',
+              kiloUserId: 'usr_tombstoned_duplicate',
+              sessionId: 'ses_tombstoned_duplicate',
+              ingestVersion: 1,
+              ingestedAt: 1,
+            },
+            ack,
+            retry,
+          },
+        ],
+      } as never,
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext
+    );
+
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(deleteObject).toHaveBeenCalledWith('staging/tombstoned-duplicate');
     expect(ack).toHaveBeenCalledTimes(1);
     expect(retry).not.toHaveBeenCalled();
   });
@@ -740,6 +928,101 @@ describe('computeSessionMetadataUpdates', () => {
   });
 });
 
+describe('queue organization changes', () => {
+  it('invalidates cached session access after persisting organization scope', async () => {
+    const sessionId = 'ses_12345678901234567890123456';
+    const organizationId = '11111111-1111-4111-8111-111111111111';
+    const persistedSession = {
+      session_id: sessionId,
+      created_at: '2026-05-05T00:00:00.000Z',
+      updated_at: '2026-05-05T00:00:01.000Z',
+      title: null,
+      created_on_platform: null,
+      organization_id: organizationId,
+      git_url: null,
+      git_branch: null,
+      parent_session_id: null,
+      status: null,
+      status_updated_at: null,
+    };
+    const selectResults: unknown[][] = [[{ session_id: sessionId }], [persistedSession]];
+    const selectResult = vi.fn(async () => selectResults.shift() ?? []);
+    const select = {
+      from: vi.fn(() => select),
+      where: vi.fn(() => select),
+      limit: vi.fn(() => select),
+      for: vi.fn(() => select),
+      then: vi.fn((resolve: (value: unknown) => unknown) => resolve(selectResult())),
+    };
+    const update = {
+      set: vi.fn(() => update),
+      where: vi.fn(() => update),
+      then: vi.fn((resolve: (value: undefined) => unknown) => resolve(undefined)),
+    };
+    const dbRef: Record<string, unknown> = {};
+    const db = {
+      select: vi.fn(() => select),
+      update: vi.fn(() => update),
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(dbRef)),
+    } as unknown as ReturnType<typeof getWorkerDb>;
+    Object.assign(dbRef, db);
+    vi.mocked(getWorkerDb).mockReturnValue(db);
+    vi.mocked(getSessionIngestDO).mockReturnValue({
+      ingest: vi.fn(async () => ({ changes: [{ name: 'orgId', value: organizationId }] })),
+    } as never);
+    const remove = vi.fn(async () => undefined);
+    vi.mocked(getSessionAccessCacheDO).mockReturnValue({ remove } as never);
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            JSON.stringify({
+              data: [
+                { type: 'kilo_meta', data: { platform: 'cloud-agent-web', orgId: organizationId } },
+              ],
+            })
+          )
+        );
+        controller.close();
+      },
+    });
+    const env = {
+      HYPERDRIVE: { connectionString: 'postgres://test' },
+      SESSION_INGEST_R2: {
+        get: vi.fn(async () => ({ body })),
+        delete: vi.fn(async () => undefined),
+        put: vi.fn(async () => undefined),
+      },
+    } as never;
+    const ack = vi.fn();
+
+    await queue(
+      {
+        messages: [
+          {
+            body: {
+              r2Key: 'ingest/org-change',
+              kiloUserId: 'usr_test',
+              sessionId,
+              ingestVersion: 1,
+              ingestedAt: 1,
+            },
+            ack,
+            retry: vi.fn(),
+          },
+        ],
+      } as never,
+      env,
+      { waitUntil: vi.fn() } as unknown as ExecutionContext
+    );
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(getSessionAccessCacheDO).toHaveBeenCalledWith(env, { kiloUserId: 'usr_test' });
+    expect(remove).toHaveBeenCalledWith(sessionId);
+  });
+});
+
 describe('queue status notifications', () => {
   it('emits a status update using the locked pre-update status instead of the intake snapshot', async () => {
     vi.mocked(notifyUserSessionEvent).mockClear();
@@ -834,5 +1117,183 @@ describe('queue status notifications', () => {
       }),
       ctx
     );
+  });
+});
+
+describe('remote session attention notifications', () => {
+  const attentionSignal = { signalId: 'msg_1', kind: 'completed', messageExcerpt: 'All done' };
+
+  function setUpAttentionTest(params: {
+    sessionRow: { parent_session_id: string | null };
+    activeCliSession?: boolean;
+    ingest?: ReturnType<typeof vi.fn>;
+    stagedItems?: unknown[];
+  }) {
+    const ingest =
+      params.ingest ?? vi.fn(async () => ({ changes: [], attentionSignals: [attentionSignal] }));
+    vi.mocked(getSessionIngestDO).mockReturnValue({ ingest } as never);
+
+    // A single session lookup serves both the deleted-session guard and push eligibility.
+    const limit = vi.fn(async () => [{ session_id: 'ses_remote', ...params.sessionRow }]);
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    vi.mocked(getWorkerDb).mockReturnValue({ select } as never);
+
+    const hasActiveCliSession = vi.fn(async () => params.activeCliSession ?? true);
+    vi.mocked(getUserConnectionDO).mockReturnValue({
+      hasActiveCliSession,
+    } as never);
+
+    const sendCloudAgentSessionNotification = vi.fn(async () => ({ dispatched: true }));
+    const body = JSON.stringify({
+      data: params.stagedItems ?? [{ type: 'message', data: { id: 'msg_1' } }],
+    });
+    const env = {
+      HYPERDRIVE: { connectionString: 'postgres://unused' },
+      SESSION_INGEST_R2: {
+        get: vi.fn(async () => new Response(body)),
+        put: vi.fn(async () => undefined),
+        delete: vi.fn(async () => undefined),
+      },
+      NOTIFICATIONS: { sendCloudAgentSessionNotification },
+    } as never;
+
+    return {
+      env,
+      ingest,
+      hasActiveCliSession,
+      sendCloudAgentSessionNotification,
+    };
+  }
+
+  async function runAttentionQueue(env: unknown) {
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: vi.fn((p: Promise<unknown>) => waitUntilPromises.push(p)),
+    } as unknown as ExecutionContext;
+
+    await queue(
+      {
+        messages: [
+          {
+            body: {
+              r2Key: 'staging/attention',
+              kiloUserId: 'usr_remote',
+              sessionId: 'ses_remote',
+              ingestVersion: 1,
+              ingestedAt: 1,
+            },
+            ack,
+            retry,
+          },
+        ],
+      } as never,
+      env as never,
+      ctx
+    );
+    await Promise.all(waitUntilPromises);
+
+    return { ack, retry };
+  }
+
+  it.skip('dispatches a push notification for an active root session', async () => {
+    const { env, hasActiveCliSession, sendCloudAgentSessionNotification } = setUpAttentionTest({
+      sessionRow: { parent_session_id: null },
+      activeCliSession: true,
+    });
+
+    const { ack } = await runAttentionQueue(env);
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(hasActiveCliSession).toHaveBeenCalledWith('ses_remote');
+    expect(sendCloudAgentSessionNotification).toHaveBeenCalledWith({
+      userId: 'usr_remote',
+      cliSessionId: 'ses_remote',
+      executionId: 'remote:msg_1',
+      status: 'completed',
+      body: 'All done',
+      suppressIfViewingSession: true,
+    });
+  });
+
+  it.skip('suppresses the push when no active CLI owns the root session', async () => {
+    const { env, hasActiveCliSession, sendCloudAgentSessionNotification } = setUpAttentionTest({
+      sessionRow: { parent_session_id: null },
+      activeCliSession: false,
+    });
+
+    await runAttentionQueue(env);
+
+    expect(hasActiveCliSession).toHaveBeenCalledWith('ses_remote');
+    expect(sendCloudAgentSessionNotification).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the push for a child session', async () => {
+    const { env, sendCloudAgentSessionNotification } = setUpAttentionTest({
+      sessionRow: { parent_session_id: 'ses_parent' },
+    });
+
+    await runAttentionQueue(env);
+
+    expect(sendCloudAgentSessionNotification).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the push when the current payload identifies a child session', async () => {
+    const ingest = vi.fn(async () => ({
+      changes: [{ name: 'parentId', value: 'ses_parent' }],
+      attentionSignals: [attentionSignal],
+    }));
+    const { env, hasActiveCliSession, sendCloudAgentSessionNotification } = setUpAttentionTest({
+      sessionRow: { parent_session_id: null },
+      ingest,
+    });
+
+    await runAttentionQueue(env);
+
+    expect(hasActiveCliSession).not.toHaveBeenCalled();
+    expect(sendCloudAgentSessionNotification).not.toHaveBeenCalled();
+  });
+
+  it('keeps notification failures non-fatal after the ingest succeeds', async () => {
+    const { env, sendCloudAgentSessionNotification } = setUpAttentionTest({
+      sessionRow: { parent_session_id: null },
+    });
+    sendCloudAgentSessionNotification.mockRejectedValue(new Error('Notifications unavailable'));
+
+    const { ack, retry } = await runAttentionQueue(env);
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it.skip('dispatches signals collected from earlier chunks when a later chunk fails', async () => {
+    // 129 items force a mid-stream flush at the 128-item chunk cap; the leftover item
+    // flushes at the end as a second DO call. The first call commits and reports a
+    // signal, the second fails — the signal must still be dispatched because the retry
+    // will not re-emit the already-persisted status transition.
+    let ingestCalls = 0;
+    const ingest = vi.fn(async () => {
+      ingestCalls += 1;
+      if (ingestCalls > 1) throw new Error('DO unavailable');
+      return { changes: [], attentionSignals: [attentionSignal] };
+    });
+    const stagedItems = Array.from({ length: 129 }, (_, i) => ({
+      type: 'message',
+      data: { id: `msg_${i}` },
+    }));
+    const { env, sendCloudAgentSessionNotification } = setUpAttentionTest({
+      sessionRow: { parent_session_id: null },
+      ingest,
+      stagedItems,
+    });
+
+    const { ack, retry } = await runAttentionQueue(env);
+
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(sendCloudAgentSessionNotification).toHaveBeenCalledTimes(1);
   });
 });

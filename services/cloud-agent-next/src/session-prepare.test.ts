@@ -7,6 +7,7 @@ import * as schemas from './router/schemas.js';
 const {
   generateSessionIdMock,
   generateSandboxRoutingTargetMock,
+  selectSandboxForNewSessionMock,
   createCliSessionMock,
   deleteCliSessionMock,
   createSessionReportMock,
@@ -24,6 +25,10 @@ const {
   generateSandboxRoutingTargetMock: vi
     .fn()
     .mockResolvedValue({ kind: 'isolated', sandboxId: 'sb-test-123' }),
+  selectSandboxForNewSessionMock: vi.fn().mockResolvedValue({
+    sandboxId: 'sb-test-123',
+    provider: 'cloudflare',
+  }),
   createCliSessionMock: vi.fn().mockResolvedValue({ created: true }),
   deleteCliSessionMock: vi.fn().mockResolvedValue({ deleted: true }),
   createSessionReportMock: vi.fn().mockResolvedValue(undefined),
@@ -66,6 +71,7 @@ vi.mock('./sandbox-id.js', async importOriginal => {
   return {
     ...actual,
     generateSandboxRoutingTarget: generateSandboxRoutingTargetMock,
+    selectSandboxForNewSession: selectSandboxForNewSessionMock,
     getSandboxNamespace: vi.fn(),
   };
 });
@@ -161,7 +167,9 @@ function createInternalApiContext(options: {
   skipBalanceCheck?: boolean;
   doStub?: ReturnType<typeof createMockDOStub>;
   getBitbucketToken?: ReturnType<typeof vi.fn>;
-  managedScmContainmentOrgIds?: string;
+  githubTokenContainmentOrgIds?: string;
+  gitlabTokenContainmentOrgIds?: string;
+  kilocodeTokenContainmentOrgIds?: string;
 }): TRPCContext {
   const doStub = options.doStub ?? createMockDOStub();
   const effectiveUserId =
@@ -223,7 +231,9 @@ function createInternalApiContext(options: {
       HYPERDRIVE: {
         connectionString: 'postgres://profile-test',
       } as TRPCContext['env']['HYPERDRIVE'],
-      MANAGED_SCM_CONTAINMENT_ORG_IDS: options.managedScmContainmentOrgIds,
+      GITHUB_TOKEN_CONTAINMENT_ORG_IDS: options.githubTokenContainmentOrgIds,
+      GITLAB_TOKEN_CONTAINMENT_ORG_IDS: options.gitlabTokenContainmentOrgIds,
+      KILOCODE_TOKEN_CONTAINMENT_ORG_IDS: options.kilocodeTokenContainmentOrgIds,
     },
   } as TRPCContext;
 }
@@ -260,6 +270,10 @@ describe('prepareSession endpoint', () => {
     generateSandboxRoutingTargetMock.mockResolvedValue({
       kind: 'isolated',
       sandboxId: 'sb-test-123',
+    });
+    selectSandboxForNewSessionMock.mockResolvedValue({
+      sandboxId: 'sb-test-123',
+      provider: 'cloudflare',
     });
     createCliSessionMock.mockResolvedValue({ created: true });
     deleteCliSessionMock.mockResolvedValue({ deleted: true });
@@ -441,7 +455,7 @@ describe('prepareSession endpoint', () => {
     const doStub = createMockDOStub();
     const orgId = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
     const caller = appRouter.createCaller(
-      createInternalApiContext({ doStub, managedScmContainmentOrgIds: orgId })
+      createInternalApiContext({ doStub, githubTokenContainmentOrgIds: orgId })
     );
 
     const result = await caller.prepareSession({
@@ -529,8 +543,9 @@ describe('prepareSession endpoint', () => {
         },
         workspace: {
           sandboxId: 'sb-test-123',
+          sandboxProvider: 'cloudflare',
           shallow: true,
-          managedScmContainment: true,
+          credentialContainment: { github: true, gitlab: false, kilocode: false },
         },
       })
     );
@@ -744,7 +759,7 @@ describe('prepareSession endpoint', () => {
     const doStub = createMockDOStub();
     const context = createInternalApiContext({
       doStub,
-      managedScmContainmentOrgIds: '*',
+      githubTokenContainmentOrgIds: '*',
     });
     Object.assign(context.env, { SHARED_SANDBOX_OVERRIDES: overrideStore });
     const caller = appRouter.createCaller(context);
@@ -761,8 +776,9 @@ describe('prepareSession endpoint', () => {
       expect.objectContaining({
         workspace: {
           sandboxId: failoverSandboxId,
+          sandboxProvider: 'cloudflare',
           shallow: undefined,
-          managedScmContainment: true,
+          credentialContainment: { github: true, gitlab: false, kilocode: false },
           sandboxRoute: {
             kind: 'shared',
             routeKey,
@@ -781,6 +797,10 @@ describe('prepareSession endpoint', () => {
     generateSandboxRoutingTargetMock.mockResolvedValueOnce({
       kind: 'isolated',
       sandboxId: 'dind-abcdef',
+    });
+    selectSandboxForNewSessionMock.mockResolvedValueOnce({
+      sandboxId: 'dind-abcdef',
+      provider: 'cloudflare',
     });
     const doStub = createMockDOStub();
     const caller = appRouter.createCaller(createInternalApiContext({ doStub }));
@@ -805,12 +825,23 @@ describe('prepareSession endpoint', () => {
         createdOnPlatform: undefined,
       }
     );
+    expect(selectSandboxForNewSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.any(Object),
+        orgId: undefined,
+        userId: 'test-user-123',
+        sessionId: 'agent_12345678-1234-1234-1234-123456789abc',
+        botId: undefined,
+        devcontainer: true,
+      })
+    );
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
         workspace: {
           sandboxId: 'dind-abcdef',
+          sandboxProvider: 'cloudflare',
           shallow: false,
-          managedScmContainment: false,
+          credentialContainment: { github: false, gitlab: false, kilocode: false },
           devcontainerRequested: true,
         },
       })
@@ -821,7 +852,7 @@ describe('prepareSession endpoint', () => {
   it('enables containment for standard GitHub sessions when the org is in the allow-list', async () => {
     const doStub = createMockDOStub();
     const caller = appRouter.createCaller(
-      createInternalApiContext({ doStub, managedScmContainmentOrgIds: '*' })
+      createInternalApiContext({ doStub, githubTokenContainmentOrgIds: '*' })
     );
 
     await caller.prepareSession({
@@ -845,14 +876,44 @@ describe('prepareSession endpoint', () => {
     );
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: true }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: true, gitlab: false, kilocode: false },
+        }),
       })
     );
   });
 
-  it('does not enable containment for standard GitLab sessions', async () => {
+  it('disables GitHub containment for an explicitly empty allow-list', async () => {
     const doStub = createMockDOStub();
-    const caller = appRouter.createCaller(createInternalApiContext({ doStub }));
+    const caller = appRouter.createCaller(
+      createInternalApiContext({
+        doStub,
+        githubTokenContainmentOrgIds: '',
+      })
+    );
+
+    await caller.prepareSession({
+      prompt: 'Disable GitHub containment',
+      mode: 'code',
+      model: 'claude-3',
+      githubRepo: 'Kilo-Org/kg',
+      autoInitiate: true,
+    });
+
+    expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace: expect.objectContaining({
+          credentialContainment: { github: false, gitlab: false, kilocode: false },
+        }),
+      })
+    );
+  });
+
+  it('persists Kilo-only containment for standard GitLab sessions', async () => {
+    const doStub = createMockDOStub();
+    const caller = appRouter.createCaller(
+      createInternalApiContext({ doStub, kilocodeTokenContainmentOrgIds: '*' })
+    );
 
     await caller.prepareSession({
       prompt: 'Test GitLab containment',
@@ -865,7 +926,9 @@ describe('prepareSession endpoint', () => {
 
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: false }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: false, gitlab: false, kilocode: true },
+        }),
       })
     );
   });
@@ -875,7 +938,7 @@ describe('prepareSession endpoint', () => {
     const caller = appRouter.createCaller(
       createInternalApiContext({
         doStub,
-        managedScmContainmentOrgIds: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+        githubTokenContainmentOrgIds: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
       })
     );
 
@@ -890,7 +953,9 @@ describe('prepareSession endpoint', () => {
 
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: false }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: false, gitlab: false, kilocode: false },
+        }),
       })
     );
   });
@@ -899,7 +964,7 @@ describe('prepareSession endpoint', () => {
     const doStub = createMockDOStub();
     const orgId = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
     const caller = appRouter.createCaller(
-      createInternalApiContext({ doStub, managedScmContainmentOrgIds: orgId })
+      createInternalApiContext({ doStub, githubTokenContainmentOrgIds: orgId })
     );
 
     await caller.prepareSession({
@@ -913,7 +978,9 @@ describe('prepareSession endpoint', () => {
 
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: true }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: true, gitlab: false, kilocode: false },
+        }),
       })
     );
   });
@@ -1176,6 +1243,10 @@ describe('start endpoint', () => {
       kind: 'isolated',
       sandboxId: 'sb-test-123',
     });
+    selectSandboxForNewSessionMock.mockResolvedValue({
+      sandboxId: 'sb-test-123',
+      provider: 'cloudflare',
+    });
     createCliSessionMock.mockResolvedValue({ created: true });
     deleteCliSessionMock.mockResolvedValue({ deleted: true });
     createSessionReportMock.mockResolvedValue(undefined);
@@ -1238,7 +1309,7 @@ describe('start endpoint', () => {
     const doStub = createMockDOStub();
     const orgId = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
     const caller = appRouter.createCaller(
-      createInternalApiContext({ doStub, managedScmContainmentOrgIds: orgId })
+      createInternalApiContext({ doStub, githubTokenContainmentOrgIds: orgId })
     );
 
     await caller.start({
@@ -1261,14 +1332,18 @@ describe('start endpoint', () => {
     );
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: true }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: true, gitlab: false, kilocode: false },
+        }),
       })
     );
   });
 
-  it('does not persist containment intent for standard GitLab grouped starts', async () => {
+  it('persists GitLab-only containment for standard GitLab grouped starts', async () => {
     const doStub = createMockDOStub();
-    const caller = appRouter.createCaller(createInternalApiContext({ doStub }));
+    const caller = appRouter.createCaller(
+      createInternalApiContext({ doStub, gitlabTokenContainmentOrgIds: '*' })
+    );
 
     await caller.start({
       message: { prompt: 'Test GitLab containment' },
@@ -1278,7 +1353,9 @@ describe('start endpoint', () => {
 
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: false }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: false, gitlab: true, kilocode: false },
+        }),
       })
     );
   });
@@ -1288,7 +1365,7 @@ describe('start endpoint', () => {
     const caller = appRouter.createCaller(
       createInternalApiContext({
         doStub,
-        managedScmContainmentOrgIds: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+        githubTokenContainmentOrgIds: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
       })
     );
 
@@ -1301,7 +1378,9 @@ describe('start endpoint', () => {
 
     expect(doStub.createSessionWithInitialAdmission).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspace: expect.objectContaining({ managedScmContainment: false }),
+        workspace: expect.objectContaining({
+          credentialContainment: { github: false, gitlab: false, kilocode: false },
+        }),
       })
     );
   });
@@ -1448,6 +1527,7 @@ describe('start endpoint', () => {
     ).rejects.toThrow('session report unavailable');
 
     expect(generateSandboxRoutingTargetMock).not.toHaveBeenCalled();
+    expect(selectSandboxForNewSessionMock).not.toHaveBeenCalled();
     expect(createCliSessionMock).not.toHaveBeenCalled();
     expect(recordVisibleSessionOutcomeMock).not.toHaveBeenCalled();
     expect(recordInitialAdmissionMock).not.toHaveBeenCalled();

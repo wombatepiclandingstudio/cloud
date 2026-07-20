@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CurrentSessionMetadataSchema,
+  getEffectiveCredentialContainment,
+  getSandboxProvider,
   parseSessionMetadata,
+  requiresContainmentSandbox,
   serializeSessionMetadata,
 } from './session-metadata.js';
 
@@ -24,6 +27,59 @@ const profile = {
 };
 
 describe('session metadata boundary', () => {
+  it('maps legacy managed SCM containment to GitHub and Kilo only', () => {
+    const metadata = parseSessionMetadata({
+      metadataSchemaVersion: 2,
+      identity: { sessionId: 'agent_legacy_containment', userId: 'user_containment' },
+      auth: {},
+      workspace: { managedScmContainment: true },
+      lifecycle: { version: 1, timestamp: 1 },
+    });
+
+    expect(getEffectiveCredentialContainment(metadata)).toEqual({
+      github: true,
+      gitlab: false,
+      kilocode: true,
+    });
+    expect(requiresContainmentSandbox(metadata)).toBe(true);
+  });
+
+  it('prefers an explicit grouped policy over legacy containment metadata', () => {
+    const metadata = parseSessionMetadata({
+      metadataSchemaVersion: 2,
+      identity: { sessionId: 'agent_migrated_containment', userId: 'user_containment' },
+      auth: {},
+      workspace: {
+        credentialContainment: { github: false, gitlab: false, kilocode: false },
+        managedScmContainment: true,
+      },
+      lifecycle: { version: 1, timestamp: 1 },
+    });
+
+    expect(getEffectiveCredentialContainment(metadata)).toEqual({
+      github: false,
+      gitlab: false,
+      kilocode: false,
+    });
+    expect(requiresContainmentSandbox(metadata)).toBe(false);
+  });
+
+  it('defaults missing credential containment to uncontained', () => {
+    const metadata = parseSessionMetadata({
+      metadataSchemaVersion: 2,
+      identity: { sessionId: 'agent_no_containment', userId: 'user_containment' },
+      auth: {},
+      lifecycle: { version: 1, timestamp: 1 },
+    });
+
+    expect(getEffectiveCredentialContainment(metadata)).toEqual({
+      github: false,
+      gitlab: false,
+      kilocode: false,
+    });
+    expect(requiresContainmentSandbox(metadata)).toBe(false);
+  });
+
   it('parses and serializes current grouped metadata with canonical attachments', () => {
     const current = {
       metadataSchemaVersion: 2 as const,
@@ -74,6 +130,7 @@ describe('session metadata boundary', () => {
           routeKey: 'usr-000000000000000000000000000000000000000000000000' as const,
           suffix: 'shared-slot-v1' as const,
         },
+        sandboxProvider: 'cloudflare' as const,
         workspacePath: '/workspace',
         sessionHome: '/home/kilo',
         branchName: 'session/agent_123',
@@ -117,6 +174,27 @@ describe('session metadata boundary', () => {
         },
       })
     ).toThrow();
+  });
+
+  it('accepts legacy current metadata without an explicit sandbox provider as Cloudflare', () => {
+    const current = {
+      metadataSchemaVersion: 2 as const,
+      identity: {
+        sessionId: 'agent_legacy_provider',
+        userId: 'user_legacy_provider',
+      },
+      auth: {},
+      workspace: {
+        sandboxId: 'ses-abcdef' as const,
+      },
+      lifecycle: {
+        version: 1,
+        timestamp: 1,
+      },
+    };
+
+    expect(parseSessionMetadata(current)).toEqual(current);
+    expect(getSandboxProvider(parseSessionMetadata(current))).toBe('cloudflare');
   });
 
   it('parses and serializes current grouped DIND workspace metadata', () => {
@@ -314,6 +392,7 @@ describe('session metadata boundary', () => {
     });
 
     expect(metadata.workspace?.sandboxId).toBe('dind-abcdef');
+    expect(getSandboxProvider(metadata)).toBe('cloudflare');
     expect(metadata.devcontainer).toEqual({
       workspacePath: '/workspace/user/sessions/agent_legacy_dind',
       innerWorkspaceFolder: '/workspaces/repo',

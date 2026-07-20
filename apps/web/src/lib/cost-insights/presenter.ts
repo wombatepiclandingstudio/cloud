@@ -33,10 +33,10 @@ import {
   type CostInsightDatabase,
 } from './repository';
 import {
-  getOwnerCurrentHourSpend,
-  getOwnerHourlySpend,
+  getOwnerHourDriverEvidence,
+  loadOwnerDashboardHourlySpend,
   getOwnerRolling24HourSpendExact,
-  getOwnerTopSpendDrivers,
+  getOwnerTopSpendDriversByRange,
   type OwnerHourlySpend,
   type OwnerTopSpendDriver,
 } from './spend-repository';
@@ -257,10 +257,14 @@ function groupByUtcDay(points: OwnerHourlySpend[]): OwnerHourlySpend[][] {
 
 export function formatSpendEvidence(
   points: OwnerHourlySpend[],
-  range: SpendRange
+  range: SpendRange,
+  currentHour?: OwnerHourlySpend
 ): SpendEvidencePoint[] {
+  const evidencePoints = currentHour
+    ? points.map(point => (point.hourStart === currentHour.hourStart ? currentHour : point))
+    : points;
   if (range === '1h' || range === '24h') {
-    return points.map(point => {
+    return evidencePoints.map(point => {
       const common = {
         label: formatHourLabel(point.hourStart),
         periodStart: normalizeCostInsightTimestamp(point.hourStart),
@@ -286,7 +290,7 @@ export function formatSpendEvidence(
     });
   }
 
-  const days = groupByUtcDay(points);
+  const days = groupByUtcDay(evidencePoints);
   if (range === '7d' || range === '30d') {
     return days.map(presentEvidenceBucket);
   }
@@ -298,15 +302,34 @@ export function formatSpendEvidence(
   return weeks;
 }
 
-async function loadRangeEvidence(
-  database: CostInsightDatabase,
-  owner: CostInsightSpendOwner,
+function hourlyEvidenceRange(
+  points: OwnerHourlySpend[],
   range: SpendRange,
   endHourExclusive: string
-): Promise<SpendEvidencePoint[]> {
+): OwnerHourlySpend[] {
   const startHour = spendRangeStartHour(range, endHourExclusive);
-  const points = await getOwnerHourlySpend(database, { owner, startHour, endHourExclusive });
-  return formatSpendEvidence(points, range);
+  return points.filter(point => point.hourStart >= startHour);
+}
+
+async function loadEvidenceByRange(
+  database: CostInsightDatabase,
+  owner: CostInsightSpendOwner,
+  endHourExclusive: string,
+  currentHour: OwnerHourlySpend
+): Promise<Record<SpendRange, SpendEvidencePoint[]>> {
+  const startHour = spendRangeStartHour('90d', endHourExclusive);
+  const points = await loadOwnerDashboardHourlySpend(database, {
+    owner,
+    startHour,
+    endHourExclusive,
+  });
+
+  return Object.fromEntries(
+    (Object.keys(rangeHours) as SpendRange[]).map(range => [
+      range,
+      formatSpendEvidence(hourlyEvidenceRange(points, range, endHourExclusive), range, currentHour),
+    ])
+  ) as Record<SpendRange, SpendEvidencePoint[]>;
 }
 
 async function loadTopDriversByRange(
@@ -314,26 +337,21 @@ async function loadTopDriversByRange(
   owner: CostInsightSpendOwner,
   endHourExclusive: string
 ): Promise<Record<SpendRange, OwnerTopSpendDriver[]>> {
-  const loadRange = (range: SpendRange) =>
-    getOwnerTopSpendDrivers(database, {
-      owner,
+  const driversByRange = await getOwnerTopSpendDriversByRange(database, {
+    owner,
+    ranges: (Object.keys(rangeHours) as SpendRange[]).map(range => ({
+      key: range,
       startHour: spendRangeStartHour(range, endHourExclusive),
-      endHourExclusive,
-      limit: 5,
-    });
-  const [thisHour, last24Hours, last7Days, last30Days, last90Days] = await Promise.all([
-    loadRange('1h'),
-    loadRange('24h'),
-    loadRange('7d'),
-    loadRange('30d'),
-    loadRange('90d'),
-  ]);
+    })),
+    endHourExclusive,
+    limit: 5,
+  });
   return {
-    '1h': thisHour,
-    '24h': last24Hours,
-    '7d': last7Days,
-    '30d': last30Days,
-    '90d': last90Days,
+    '1h': driversByRange.get('1h') ?? [],
+    '24h': driversByRange.get('24h') ?? [],
+    '7d': driversByRange.get('7d') ?? [],
+    '30d': driversByRange.get('30d') ?? [],
+    '90d': driversByRange.get('90d') ?? [],
   };
 }
 
@@ -760,57 +778,71 @@ export async function buildCostInsightsDashboardData(params: {
   const asOf = new Date().toISOString();
   const currentHourStart = floorUtcHour(new Date(asOf));
   const endHourExclusive = addHours(currentHourStart, 1);
+  const isExactHourBoundary = asOf === currentHourStart;
   const config = await getCostInsightOwnerConfig(params.database, params.owner);
   const [
-    currentHourSpend,
+    currentHourEvidence,
     rolling24HourSpend,
     anomalyPolicy,
     dashboardState,
     topDriversByRange,
     events,
   ] = await Promise.all([
-    getOwnerCurrentHourSpend(params.database, params.owner),
-    getOwnerRolling24HourSpendExact(params.database, { owner: params.owner, asOf }),
+    isExactHourBoundary
+      ? Promise.resolve({
+          startInclusive: currentHourStart,
+          endExclusive: asOf,
+          variableMicrodollars: 0,
+          scheduledMicrodollars: 0,
+          totalMicrodollars: 0,
+          topDrivers: [],
+          usedCanonicalFallback: false,
+          degradedIntervalCount: 0,
+        })
+      : getOwnerHourDriverEvidence(params.database, {
+          owner: params.owner,
+          hourStart: currentHourStart,
+          intervalEnd: asOf,
+        }),
+    getOwnerRolling24HourSpendExact(params.database, {
+      owner: params.owner,
+      asOf,
+      fallbackToCanonical: true,
+    }),
     getCostInsightAnomalyPolicy(params.database, params.owner, currentHourStart),
     getCostInsightDashboardState(params.database, params.owner),
     loadTopDriversByRange(params.database, params.owner, endHourExclusive),
     listCostInsightEvents(params.database, params.owner, { limit: 5 }),
   ]);
-  const [
-    evidenceThisHour,
-    evidence24h,
-    evidence7d,
-    evidence30d,
-    evidence90d,
-    actorLabels,
-    activeSuggestions,
-    eventPreview,
-    memberLimitsHref,
-  ] = await Promise.all([
-    loadRangeEvidence(params.database, params.owner, '1h', endHourExclusive),
-    loadRangeEvidence(params.database, params.owner, '24h', endHourExclusive),
-    loadRangeEvidence(params.database, params.owner, '7d', endHourExclusive),
-    loadRangeEvidence(params.database, params.owner, '30d', endHourExclusive),
-    loadRangeEvidence(params.database, params.owner, '90d', endHourExclusive),
-    loadActorLabels(params.database, [
-      ...Object.values(topDriversByRange).flatMap(drivers =>
-        drivers.map(driver => driver.actorUserId)
-      ),
-      ...dashboardState.events.flatMap(event =>
-        (event.snapshot.topDrivers ?? [])
-          .map(driver => driver.actorUserId)
-          .filter((actorUserId): actorUserId is string => Boolean(actorUserId))
-      ),
-    ]),
-    (config?.cost_suggestions_enabled ?? true)
-      ? listActiveCostInsightSuggestions(params.database, params.owner)
-      : [],
-    mapEvents(params.database, params.owner, events),
-    loadOrganizationMemberLimitsHref(params.database, params.owner, params.uiOwner),
-  ]);
+  const currentHourSpend: OwnerHourlySpend = {
+    hourStart: currentHourStart,
+    variableMicrodollars: currentHourEvidence.variableMicrodollars,
+    scheduledMicrodollars: currentHourEvidence.scheduledMicrodollars,
+    totalMicrodollars: currentHourEvidence.totalMicrodollars,
+    variableRecordCount: null,
+    scheduledRecordCount: null,
+    isCovered: true,
+  };
+  const [evidenceByRange, actorLabels, activeSuggestions, eventPreview, memberLimitsHref] =
+    await Promise.all([
+      loadEvidenceByRange(params.database, params.owner, endHourExclusive, currentHourSpend),
+      loadActorLabels(params.database, [
+        ...Object.values(topDriversByRange).flatMap(drivers =>
+          drivers.map(driver => driver.actorUserId)
+        ),
+        ...dashboardState.events.flatMap(event =>
+          (event.snapshot.topDrivers ?? [])
+            .map(driver => driver.actorUserId)
+            .filter((actorUserId): actorUserId is string => Boolean(actorUserId))
+        ),
+      ]),
+      (config?.cost_suggestions_enabled ?? true)
+        ? listActiveCostInsightSuggestions(params.database, params.owner)
+        : [],
+      mapEvents(params.database, params.owner, events),
+      loadOrganizationMemberLimitsHref(params.database, params.owner, params.uiOwner),
+    ]);
 
-  const currentHourVariableMicrodollars =
-    evidenceThisHour[0]?.coverage === 'complete' ? currentHourSpend.variableMicrodollars : null;
   const alerts = formatActiveCostInsightAlerts(dashboardState, params.owner, actorLabels);
   return {
     enabled: config?.spend_alerts_enabled ?? false,
@@ -818,21 +850,15 @@ export async function buildCostInsightsDashboardData(params: {
     range: '7d',
     metrics: buildMetrics({
       rolling24HourMicrodollars: rolling24HourSpend.totalMicrodollars,
-      currentHourVariableMicrodollars,
+      currentHourVariableMicrodollars: currentHourEvidence.variableMicrodollars,
       anomalyBaselineMicrodollars: anomalyPolicy.baselineMicrodollars,
       anomalyThresholdMicrodollars: anomalyPolicy.thresholdMicrodollars,
       thresholdMicrodollars: config?.spend_threshold_microdollars ?? null,
       alerts,
       enabled: config?.spend_alerts_enabled ?? false,
     }),
-    evidence: evidence7d,
-    evidenceByRange: {
-      '1h': evidenceThisHour,
-      '24h': evidence24h,
-      '7d': evidence7d,
-      '30d': evidence30d,
-      '90d': evidence90d,
-    },
+    evidence: evidenceByRange['7d'],
+    evidenceByRange,
     driversByRange: {
       '1h': mapDrivers(params.owner, topDriversByRange['1h'], actorLabels),
       '24h': mapDrivers(params.owner, topDriversByRange['24h'], actorLabels),

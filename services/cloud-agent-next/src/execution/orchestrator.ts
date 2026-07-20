@@ -25,7 +25,11 @@ import {
   getPreparationInfrastructureFailure,
   withPreparationInfrastructureRecovery,
 } from '../sandbox-recovery.js';
-import type { AgentSandbox, WrapperInstanceLease } from '../agent-sandbox/protocol.js';
+import {
+  AgentSandboxUnavailableError,
+  type AgentSandbox,
+  type WrapperInstanceLease,
+} from '../agent-sandbox/protocol.js';
 import { isCodeReviewEphemeralSandboxId } from '../code-review-ephemeral-sandbox.js';
 
 /** Maximum time allowed for complete wrapper readiness, including Kilo startup. */
@@ -49,6 +53,26 @@ function withWorkspacePreparationTimeout<T>(operation: Promise<T>, step: string)
         timeoutLayer: 'outer',
       })
   );
+}
+
+function translateKnownWrapperFailure(error: unknown): Error | undefined {
+  if (error instanceof ExecutionError) return error;
+  if (!(error instanceof WrapperError)) return undefined;
+
+  if (error.code === 'WORKSPACE_SETUP_FAILED') {
+    return ExecutionError.workspaceSetupFailed(error.message, error, {
+      subtype: error.workspaceFailureSubtype,
+      safeFailureMessage: error.safeDetail,
+      retryable: error.retryable,
+    });
+  }
+  if (error.code === 'KILO_SERVER_FAILED') {
+    return ExecutionError.kiloServerFailed(error.message, error);
+  }
+  if (error.code === 'WRAPPER_FINALIZING') {
+    return error;
+  }
+  return undefined;
 }
 
 export type OrchestratorDeps = {
@@ -145,8 +169,14 @@ export class ExecutionOrchestrator {
       });
     } catch (error) {
       await this.destroyEphemeralSandboxAfterPreAcceptanceFailure(sandbox, plan, error);
-      if (error instanceof ExecutionError) throw error;
-      if (error instanceof WrapperError && error.code === 'WRAPPER_FINALIZING') throw error;
+      const knownFailure = translateKnownWrapperFailure(error);
+      if (knownFailure) throw knownFailure;
+      if (error instanceof AgentSandboxUnavailableError) {
+        throw ExecutionError.sandboxCapabilityUnavailable(
+          'Sandbox runtime delivery is unavailable for this session',
+          error
+        );
+      }
       throw ExecutionError.wrapperStartFailed(
         `Failed to start wrapper: ${error instanceof Error ? error.message : String(error)}`,
         error
@@ -210,22 +240,8 @@ export class ExecutionOrchestrator {
           wrapperErrorCode: error instanceof WrapperError ? error.code : undefined,
         })
         .warn('ExecutionOrchestrator wrapper dispatch failed');
-      if (error instanceof WrapperError) {
-        if (error.code === 'WORKSPACE_SETUP_FAILED') {
-          throw ExecutionError.workspaceSetupFailed(error.message, error, {
-            subtype: error.workspaceFailureSubtype,
-            safeFailureMessage: error.safeDetail,
-            retryable: error.retryable,
-          });
-        }
-        if (error.code === 'KILO_SERVER_FAILED') {
-          throw ExecutionError.kiloServerFailed(error.message, error);
-        }
-        if (error.code === 'WRAPPER_FINALIZING') {
-          throw error;
-        }
-      }
-      if (error instanceof ExecutionError) throw error;
+      const knownFailure = translateKnownWrapperFailure(error);
+      if (knownFailure) throw knownFailure;
       throw ExecutionError.wrapperStartFailed(
         `Failed to execute wrapper bootstrap: ${error instanceof Error ? error.message : String(error)}`,
         error

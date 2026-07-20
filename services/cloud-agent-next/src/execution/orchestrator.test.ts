@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentSandbox, WrapperInstanceLease } from '../agent-sandbox/protocol.js';
+import {
+  AgentSandboxUnavailableError,
+  type AgentSandbox,
+  type WrapperInstanceLease,
+} from '../agent-sandbox/protocol.js';
 import type { Env } from '../types.js';
 import { WrapperError } from '../kilo/wrapper-client.js';
 import type { ExecutionError } from './errors.js';
@@ -220,17 +224,10 @@ describe('ExecutionOrchestrator AgentSandbox delivery', () => {
         command: 'compact',
         arguments: '--aggressive',
       },
-      finalization: {
-        autoCommit: true,
-        condenseOnComplete: false,
-      },
     } satisfies FencedWrapperDispatchRequest;
     const commandRequest = {
       command: 'compact',
-      args: '--aggressive',
       messageId: commandPlan.turn.messageId,
-      autoCommit: true,
-      condenseOnComplete: false,
       session: prepared.readyRequest.session,
     };
     buildWrapperSessionReadyAndPromptRequestsMock.mockResolvedValueOnce({
@@ -261,6 +258,38 @@ describe('ExecutionOrchestrator AgentSandbox delivery', () => {
       retryable: false,
       workspaceFailureSubtype: 'git_branch_missing',
       safeFailureMessage: 'Requested repository branch was not found',
+    } satisfies Partial<ExecutionError>);
+  });
+
+  it('preserves non-retryable workspace setup failures during wrapper startup', async () => {
+    const { orchestrator, ensureWrapper } = createOrchestrator();
+    ensureWrapper.mockRejectedValueOnce(
+      new WrapperError('Setup command 2 failed', 'WORKSPACE_SETUP_FAILED', 503, {
+        workspaceFailureSubtype: 'setup_command_failed',
+        safeDetail:
+          'command: pip install, termination: nonzero exit, exit code: 127, output:\nsh: 1: pip: not found',
+        retryable: false,
+      })
+    );
+
+    await expect(orchestrator.execute(basePlan)).rejects.toMatchObject({
+      code: 'WORKSPACE_SETUP_FAILED',
+      retryable: false,
+      workspaceFailureSubtype: 'setup_command_failed',
+      safeFailureMessage:
+        'command: pip install, termination: nonzero exit, exit code: 127, output:\nsh: 1: pip: not found',
+    } satisfies Partial<ExecutionError>);
+  });
+
+  it('classifies intentionally unavailable wrapper delivery as permanent', async () => {
+    const { orchestrator, ensureWrapper } = createOrchestrator();
+    ensureWrapper.mockRejectedValueOnce(
+      new AgentSandboxUnavailableError('Sandbox delivery capability is not enabled')
+    );
+
+    await expect(orchestrator.execute(basePlan)).rejects.toMatchObject({
+      code: 'SANDBOX_CAPABILITY_UNAVAILABLE',
+      retryable: false,
     } satisfies Partial<ExecutionError>);
   });
 
