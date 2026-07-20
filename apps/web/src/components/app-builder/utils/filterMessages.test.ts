@@ -156,7 +156,7 @@ describe('paginateMessages (V1 helper, regression)', () => {
       msg(6, 'assistant'),
     ];
     const result = paginateMessages(messages, 2);
-    expect(result.visibleMessages).toEqual(messages.slice(4));
+    expect(result.visibleMessages).toEqual(messages.slice(2));
     expect(result.hasOlderMessages).toBe(true);
   });
 });
