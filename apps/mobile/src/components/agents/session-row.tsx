@@ -1,11 +1,17 @@
 import * as Haptics from 'expo-haptics';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, Modal, Platform, Pressable, TextInput, View } from 'react-native';
 
 import { SessionRow } from '@/components/ui/session-row';
 import { Text } from '@/components/ui/text';
 import { type AgentSessionSortBy, getAgentSessionTimestamp } from '@/lib/agent-session-sort';
 import { useThemeColors } from '@/lib/hooks/use-theme-colors';
+import {
+  isAttentionAcked,
+  reconcileSessionAttention,
+  shouldShowNeedsInput,
+  useSessionAttentionRevision,
+} from '@/lib/session-attention';
 import { platformLabel } from '@/lib/platform-label';
 import { parseTimestamp, timeAgo } from '@/lib/utils';
 
@@ -20,6 +26,7 @@ type StoredSessionRowProps = {
     updated_at: string;
     git_branch: string | null;
     status: string | null;
+    status_updated_at: string | null;
   };
   isLive: boolean;
   /**
@@ -98,6 +105,17 @@ export function StoredSessionRow({
   const renameTextRef = useRef(title);
   const agentLabel = platformLabel(session.created_on_platform);
 
+  const revision = useSessionAttentionRevision();
+  const raiseId = session.status_updated_at ?? session.status ?? null;
+  const needsInput = shouldShowNeedsInput({
+    status: session.status,
+    raiseId,
+    isAcked: isAttentionAcked(session.session_id, raiseId),
+  });
+  useEffect(() => {
+    reconcileSessionAttention(session.session_id, session.status, session.status_updated_at);
+  }, [session.session_id, session.status, session.status_updated_at, revision]);
+
   const handleRenameConfirm = () => {
     const newName = renameTextRef.current.trim();
     setRenameVisible(false);
@@ -150,7 +168,7 @@ export function StoredSessionRow({
       <Pressable
         onPress={onPress}
         onLongPress={handleLongPress}
-        accessibilityLabel={title}
+        accessibilityLabel={needsInput ? `${title}, needs input` : title}
         className="active:opacity-70"
       >
         <SessionRow
@@ -159,6 +177,7 @@ export function StoredSessionRow({
           subtitle={session.git_branch}
           meta={formatMeta(getAgentSessionTimestamp(session, sortBy))}
           live={isLive}
+          needsInput={needsInput}
           stripMode="inline"
           className="pl-[22px] pr-[22px]"
         />
@@ -225,14 +244,30 @@ export function RemoteSessionRow({ session, onPress }: Readonly<RemoteSessionRow
   // here) means future per-platform tweaks still apply to the legacy case.
   const agentLabel = platformLabel(session.platform ?? 'cloud-agent');
 
+  const revision = useSessionAttentionRevision();
+  const raiseId = session.status;
+  const needsInput = shouldShowNeedsInput({
+    status: session.status,
+    raiseId,
+    isAcked: isAttentionAcked(session.id, raiseId),
+  });
+  useEffect(() => {
+    reconcileSessionAttention(session.id, session.status, null);
+  }, [session.id, session.status, revision]);
+
   return (
-    <Pressable onPress={onPress} accessibilityLabel={title} className="active:opacity-70">
+    <Pressable
+      onPress={onPress}
+      accessibilityLabel={needsInput ? `${title}, needs input` : title}
+      className="active:opacity-70"
+    >
       <SessionRow
         agentLabel={agentLabel}
         title={title}
         subtitle={session.gitBranch}
         meta={session.status.toUpperCase()}
         live
+        needsInput={needsInput}
         stripMode="inline"
         className="pl-[22px] pr-[22px]"
       />
