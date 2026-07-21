@@ -6,14 +6,14 @@ import { SessionRow } from '@/components/ui/session-row';
 import { Text } from '@/components/ui/text';
 import { type AgentSessionSortBy, getAgentSessionTimestamp } from '@/lib/agent-session-sort';
 import { useThemeColors } from '@/lib/hooks/use-theme-colors';
+import { type ActiveSession } from '@/lib/hooks/use-agent-sessions';
 import {
   isAttentionAcked,
   reconcileSessionAttention,
   shouldShowNeedsInput,
   useSessionAttentionRevision,
 } from '@/lib/session-attention';
-import { platformLabel } from '@/lib/platform-label';
-import { parseTimestamp, timeAgo } from '@/lib/utils';
+import { formatMeta, platformLabel, remoteAgentLabel, remoteMeta } from './session-list-helpers';
 
 type StoredSessionRowProps = {
   session: {
@@ -28,7 +28,6 @@ type StoredSessionRowProps = {
     status: string | null;
     status_updated_at: string | null;
   };
-  isLive: boolean;
   /**
    * Which timestamp drives the row's relative meta label. The list
    * section the session lands in and the timestamp shown here are
@@ -41,26 +40,9 @@ type StoredSessionRowProps = {
 };
 
 type RemoteSessionRowProps = {
-  session: {
-    id: string;
-    title: string;
-    status: string;
-    gitBranch?: string;
-    /**
-     * Backend-reported platform for this live session (e.g. `'cli'` for a
-     * `kilo remote` connection, `'vscode'` for the extension). Legacy CLIs
-     * predating the platform field never report one; in that case the
-     * row falls back to the `'cloud-agent'` label so behavior is
-     * byte-identical to the previous hardcode.
-     */
-    platform?: string;
-  };
+  session: ActiveSession;
   onPress: () => void;
 };
-
-function formatMeta(timestamp: string): string {
-  return timeAgo(parseTimestamp(timestamp)).toUpperCase();
-}
 
 function showDeleteConfirm(onDelete: () => void) {
   void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -93,7 +75,6 @@ function showRenamePrompt(currentTitle: string, onRename: (newTitle: string) => 
 
 export function StoredSessionRow({
   session,
-  isLive,
   sortBy,
   onPress,
   onDelete,
@@ -176,7 +157,6 @@ export function StoredSessionRow({
           title={title}
           subtitle={session.git_branch}
           meta={formatMeta(getAgentSessionTimestamp(session, sortBy))}
-          live={isLive}
           needsInput={needsInput}
           stripMode="inline"
           className="pl-[22px] pr-[22px]"
@@ -237,12 +217,6 @@ export function StoredSessionRow({
 
 export function RemoteSessionRow({ session, onPress }: Readonly<RemoteSessionRowProps>) {
   const title = session.title.length > 0 ? session.title : 'Untitled session';
-  // Platform present → real label via the shared helper. Platform absent
-  // (legacy CLI) → fall through to `'cloud-agent'`, which the helper
-  // renders as the same "CLOUD AGENT" string the row hardcoded before
-  // this slice. Keeping the literal in the helper (not a magic constant
-  // here) means future per-platform tweaks still apply to the legacy case.
-  const agentLabel = platformLabel(session.platform ?? 'cloud-agent');
 
   const revision = useSessionAttentionRevision();
   const raiseId = session.status;
@@ -262,12 +236,13 @@ export function RemoteSessionRow({ session, onPress }: Readonly<RemoteSessionRow
       className="active:opacity-70"
     >
       <SessionRow
-        agentLabel={agentLabel}
+        agentLabel={remoteAgentLabel(session.platform ?? session.createdOnPlatform)}
         title={title}
-        subtitle={session.gitBranch}
-        meta={session.status.toUpperCase()}
+        subtitle={session.gitBranch ?? null}
+        meta={remoteMeta(session)}
         live
         needsInput={needsInput}
+        metaWhileLive
         stripMode="inline"
         className="pl-[22px] pr-[22px]"
       />
