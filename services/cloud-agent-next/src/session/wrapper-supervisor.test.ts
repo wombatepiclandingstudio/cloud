@@ -607,7 +607,7 @@ describe('WrapperSupervisor', () => {
     'usage_limit_exceeded',
     'Too Many Requests',
     'Model not found: kilo/anthropic/claude-haiku-4.5',
-  ])('classifies an explicit assistant request failure as assistant_error: %s', async error => {
+  ])('classifies an explicit assistant request failure: %s', async error => {
     const harness = createHarness([liveRuntimeState(), OWNED_WRAPPER_LEASE]);
     await putSessionMessageState(harness.storage, acceptedMessage());
 
@@ -624,13 +624,50 @@ describe('WrapperSupervisor', () => {
       error,
       completionSource: 'wrapper_failure',
       failureStage: 'agent_activity',
-      failureCode: 'assistant_error',
+      failureCode:
+        error === 'Payment Required'
+          ? 'payment_required'
+          : error.startsWith('Model not found')
+            ? 'model_missing'
+            : 'assistant_error',
+      assistantFailureReason:
+        error === 'Payment Required'
+          ? 'insufficient_credits'
+          : error === 'usage_limit_exceeded' || error === 'Too Many Requests'
+            ? 'rate_limited'
+            : 'model_unavailable',
+      providerOwnership: 'unknown',
       safeFailureMessage:
-        error === 'Payment Required' || error === 'usage_limit_exceeded'
+        error === 'Payment Required'
           ? 'Assistant request failed: insufficient credits'
-          : error === 'Too Many Requests'
+          : error === 'usage_limit_exceeded' || error === 'Too Many Requests'
             ? 'Assistant request was rate limited'
             : 'Assistant request failed: model not found',
+    });
+  });
+
+  it('derives managed provider ownership from the admitted model on assistant failures', async () => {
+    const harness = createHarness([liveRuntimeState(), OWNED_WRAPPER_LEASE]);
+    await putSessionMessageState(harness.storage, {
+      ...acceptedMessage(),
+      admissionSnapshot: {
+        turn: { type: 'prompt', messageId: MESSAGE_ID, prompt: 'supervise this wrapper' },
+        agent: { mode: 'code', model: 'kilo-auto/free' },
+      },
+    });
+
+    await harness.supervisor.onTerminalEvent({
+      wrapperRunId: WRAPPER_RUN_ID,
+      status: 'failed',
+      error: '503 Service Unavailable',
+      errorSource: 'assistant',
+    });
+
+    await expect(getSessionMessageState(harness.storage, MESSAGE_ID)).resolves.toMatchObject({
+      status: 'failed',
+      failureReason: 'assistant_error',
+      assistantFailureReason: 'provider_unavailable',
+      providerOwnership: 'managed',
     });
   });
 
