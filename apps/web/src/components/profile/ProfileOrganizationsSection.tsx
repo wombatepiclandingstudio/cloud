@@ -34,7 +34,7 @@ export function ProfileOrganizationsSection({ orgs }: ProfileOrganizationsSectio
               >
                 <Card className="hover:border-primary/20 transition-shadow duration-200 hover:shadow-md">
                   <CardContent className="p-4">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
                       <div className="flex items-center space-x-3">
                         <div className="shrink-0">
                           <div className="bg-primary/10 flex h-10 w-10 items-center justify-center rounded-lg">
@@ -70,7 +70,7 @@ export function ProfileOrganizationsSection({ orgs }: ProfileOrganizationsSectio
                           </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-6">
+                      <div className="hidden sm:flex items-center gap-6">
                         <div className="text-muted-foreground flex items-center">
                           <span className="text-sm">View details →</span>
                         </div>
