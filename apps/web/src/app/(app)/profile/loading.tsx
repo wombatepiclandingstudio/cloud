@@ -42,7 +42,7 @@ export default function ProfileLoading() {
         <CardContent>
           <div className="space-y-3">
             {Array.from({ length: 2 }, (_, index) => (
-              <div key={index} className="flex items-center justify-between rounded-lg border p-4">
+              <div key={index} className="flex flex-wrap items-center justify-between rounded-lg border p-4">
                 <div className="flex items-center gap-3">
                   <Skeleton className="h-10 w-10 rounded-full" /> {/* Org avatar */}
                   <div className="space-y-2">
@@ -50,7 +50,9 @@ export default function ProfileLoading() {
                     <Skeleton className="h-4 w-24" /> {/* Member count */}
                   </div>
                 </div>
-                <Skeleton className="h-9 w-20" /> {/* Action button */}
+                <div className="hidden sm:flex">
+                  <Skeleton className="h-9 w-20" /> {/* Action button */}
+                </div>
               </div>
             ))}
           </div>
